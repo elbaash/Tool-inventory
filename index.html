@@ -114,6 +114,7 @@
             // Settings
             const [settings, setSettings] = useState({
                 googleSheetsUrl: localStorage.getItem('googleSheetsUrl') || '',
+                autoSync: localStorage.getItem('autoSync') === 'true' || false,
                 aiEnabled: localStorage.getItem('aiEnabled') === 'true' || false,
                 ollamaUrl: localStorage.getItem('ollamaUrl') || 'http://localhost:11434',
                 aiServerUrl: localStorage.getItem('aiServerUrl') || 'http://localhost:8000',
@@ -188,7 +189,7 @@
             };
 
             // Add or update item
-            const handleSaveItem = () => {
+            const handleSaveItem = async () => {
                 if (!formData.name || !formData.box) {
                     showMessage('Please fill in item name and box number', 'error');
                     return;
@@ -196,7 +197,7 @@
 
                 if (editingItem) {
                     // Update existing
-                    setItems(items.map(item => 
+                    setItems(items.map(item =>
                         item.id === editingItem.id ? { ...item, ...formData } : item
                     ));
                     showMessage('Item updated!');
@@ -210,6 +211,11 @@
                     showMessage('Item added!');
                 }
 
+                // Auto-sync to Google Sheets if enabled
+                if (settings.autoSync && settings.googleSheetsUrl) {
+                    setTimeout(() => pushToSheets(), 500);
+                }
+
                 // Reset form
                 setFormData({ name: '', box: '', quantity: '1', notes: '', photo: null });
                 setEditingItem(null);
@@ -221,6 +227,11 @@
                 if (confirm('Are you sure you want to delete this item?')) {
                     setItems(items.filter(item => item.id !== id));
                     showMessage('Item deleted');
+
+                    // Auto-sync to Google Sheets if enabled
+                    if (settings.autoSync && settings.googleSheetsUrl) {
+                        setTimeout(() => pushToSheets(), 500);
+                    }
                 }
             };
 
@@ -237,11 +248,44 @@
                 setView('add');
             };
 
-            // Sync with Google Sheets
-            const syncWithSheets = async () => {
+            // Push local items to Google Sheets
+            const pushToSheets = async () => {
                 if (!settings.googleSheetsUrl) {
                     showMessage('Please configure Google Sheets URL in settings', 'error');
-                    return;
+                    return false;
+                }
+
+                setIsLoading(true);
+                try {
+                    const response = await fetch(settings.googleSheetsUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            action: 'updateAll',
+                            items: items
+                        })
+                    });
+
+                    const data = await response.json();
+                    if (data.success) {
+                        return true;
+                    } else {
+                        throw new Error(data.error || 'Failed to push to sheets');
+                    }
+                } catch (error) {
+                    showMessage('Failed to push to Google Sheets: ' + error.message, 'error');
+                    console.error(error);
+                    return false;
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            // Pull items from Google Sheets
+            const pullFromSheets = async () => {
+                if (!settings.googleSheetsUrl) {
+                    showMessage('Please configure Google Sheets URL in settings', 'error');
+                    return false;
                 }
 
                 setIsLoading(true);
@@ -251,14 +295,53 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ action: 'getAll' })
                     });
-                    
+
                     const data = await response.json();
                     if (data.items) {
                         setItems(data.items);
-                        showMessage('Synced with Google Sheets!');
+                        return true;
+                    } else {
+                        throw new Error('Invalid response from Google Sheets');
                     }
                 } catch (error) {
-                    showMessage('Failed to sync with Google Sheets', 'error');
+                    showMessage('Failed to pull from Google Sheets: ' + error.message, 'error');
+                    console.error(error);
+                    return false;
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            // Two-way sync with Google Sheets
+            const syncWithSheets = async (direction = 'both') => {
+                if (!settings.googleSheetsUrl) {
+                    showMessage('Please configure Google Sheets URL in settings', 'error');
+                    return;
+                }
+
+                setIsLoading(true);
+                try {
+                    if (direction === 'push' || direction === 'both') {
+                        const pushSuccess = await pushToSheets();
+                        if (!pushSuccess && direction === 'both') {
+                            setIsLoading(false);
+                            return;
+                        }
+                        if (direction === 'push') {
+                            showMessage('Pushed to Google Sheets!');
+                            setIsLoading(false);
+                            return;
+                        }
+                    }
+
+                    if (direction === 'pull' || direction === 'both') {
+                        const pullSuccess = await pullFromSheets();
+                        if (pullSuccess) {
+                            showMessage(direction === 'both' ? 'Two-way sync complete!' : 'Pulled from Google Sheets!');
+                        }
+                    }
+                } catch (error) {
+                    showMessage('Sync failed: ' + error.message, 'error');
                     console.error(error);
                 }
                 setIsLoading(false);
@@ -728,7 +811,7 @@
             const renderSettings = () => (
                 <div className="p-4">
                     <h2 className="text-2xl font-bold mb-4">Settings</h2>
-                    
+
                     <div className="space-y-4">
                         <div>
                             <h3 className="font-semibold mb-2">Google Sheets Integration</h3>
@@ -739,13 +822,43 @@
                                 placeholder="Google Apps Script Web App URL"
                                 className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none mb-2"
                             />
-                            <button
-                                onClick={syncWithSheets}
-                                disabled={!settings.googleSheetsUrl}
-                                className="w-full bg-green-600 text-white py-2 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-300"
-                            >
-                                Sync Now
-                            </button>
+
+                            <label className="flex items-center gap-2 mb-3">
+                                <input
+                                    type="checkbox"
+                                    checked={settings.autoSync}
+                                    onChange={(e) => setSettings({...settings, autoSync: e.target.checked})}
+                                    className="w-4 h-4"
+                                />
+                                <span className="text-sm">Auto-sync changes to Google Sheets</span>
+                            </label>
+
+                            <div className="grid grid-cols-3 gap-2 mb-2">
+                                <button
+                                    onClick={() => syncWithSheets('pull')}
+                                    disabled={!settings.googleSheetsUrl}
+                                    className="bg-blue-600 text-white py-2 px-3 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:bg-gray-300"
+                                >
+                                    Pull
+                                </button>
+                                <button
+                                    onClick={() => syncWithSheets('push')}
+                                    disabled={!settings.googleSheetsUrl}
+                                    className="bg-orange-600 text-white py-2 px-3 rounded-lg text-sm font-semibold hover:bg-orange-700 disabled:bg-gray-300"
+                                >
+                                    Push
+                                </button>
+                                <button
+                                    onClick={() => syncWithSheets('both')}
+                                    disabled={!settings.googleSheetsUrl}
+                                    className="bg-green-600 text-white py-2 px-3 rounded-lg text-sm font-semibold hover:bg-green-700 disabled:bg-gray-300"
+                                >
+                                    Both
+                                </button>
+                            </div>
+                            <p className="text-xs text-gray-600">
+                                Pull: Load from Sheets | Push: Save to Sheets | Both: Two-way sync
+                            </p>
                         </div>
 
                         <div className="border-t-2 pt-4">
