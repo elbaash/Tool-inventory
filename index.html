@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Tool Inventory Manager</title>
+    <meta name="description" content="AI-powered tool inventory with photo identification and voice batch entry">
+    
+    <!-- React and dependencies -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiQUkgVG9vbCBJbnZlbnRvcnkgTWFuYWdlciIsInNob3J0X25hbWUiOiJBSSBJbnZlbnRvcnkiLCJ0aGVtZV9jb2xvciI6IiMyNTYzZWIiLCJiYWNrZ3JvdW5kX2NvbG9yIjoiI2Y5ZmFmYiIsImRpc3BsYXkiOiJzdGFuZGFsb25lIiwic3RhcnRfdXJsIjoiLyIsImljb25zIjpbeyJzcmMiOiJkYXRhOmltYWdlL3N2Zyt4bWw7YmFzZTY0LFBITjJaeUIzYVdSMGFEMGlNalFpSUdobGFXZG9kRDBpTWpRaUlIWnBaWGRDYjNnOUlqQWdNQ0F5TkNBeU5DSWdabWxzYkQwaUl6STFOak5sWWlJK1BISmxZM1FnZUQwaU5DSWdlVDBpTkNJZ2QybGtkR2c5SWpFMklpQm9aV2xuYUhROUlqRTJJaUJtYVd4c1BTSjBjbUZ1YzJoaFpXNTBJajQ4TDNKbFkzUStQQzl6ZG1jKyIsInNpemVzIjoiMjR4MjQiLCJ0eXBlIjoiaW1hZ2Uvc3ZnK3htbCJ9XX0=">
+    
+    <!-- Mobile optimizations -->
+    <meta name="theme-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="AI Tool Inventory">
+    
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        
+        // Icons as SVG components
+        const SearchIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            </svg>
+        );
+        
+        const PlusIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M12 5v14M5 12h14"/>
+            </svg>
+        );
+        
+        const BoxIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+            </svg>
+        );
+        
+        const SettingsIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6M1 12h6m6 0h6"/>
+            </svg>
+        );
+        
+        const CameraIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+            </svg>
+        );
+        
+        const MicIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/>
+            </svg>
+        );
+        
+        const EditIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+        );
+        
+        const TrashIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+        );
+        
+        const CheckIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M20 6 9 17l-5-5"/>
+            </svg>
+        );
+        
+        const AlertIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
+            </svg>
+        );
+        
+        const XIcon = () => (
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M18 6 6 18M6 6l12 12"/>
+            </svg>
+        );
+
+        function InventoryApp() {
+            // State management
+            const [items, setItems] = useState([]);
+            const [searchQuery, setSearchQuery] = useState('');
+            const [filteredItems, setFilteredItems] = useState([]);
+            const [view, setView] = useState('search'); // search, add, boxes, settings, aiPhoto, aiVoice
+            const [isLoading, setIsLoading] = useState(false);
+            const [message, setMessage] = useState({ text: '', type: '' });
+            const [showSetupGuide, setShowSetupGuide] = useState(true);
+            
+            // Settings
+            const [settings, setSettings] = useState({
+                googleSheetsUrl: localStorage.getItem('googleSheetsUrl') || '',
+                aiEnabled: localStorage.getItem('aiEnabled') === 'true' || false,
+                ollamaUrl: localStorage.getItem('ollamaUrl') || 'http://localhost:11434',
+                aiServerUrl: localStorage.getItem('aiServerUrl') || 'http://localhost:8000',
+            });
+
+            // Add/Edit item state
+            const [editingItem, setEditingItem] = useState(null);
+            const [formData, setFormData] = useState({
+                name: '',
+                box: '',
+                quantity: '1',
+                notes: '',
+                photo: null
+            });
+
+            // Voice recording
+            const [isRecording, setIsRecording] = useState(false);
+            const [transcript, setTranscript] = useState('');
+            
+            // AI Photo
+            const [capturedImage, setCapturedImage] = useState(null);
+            const [aiIdentification, setAiIdentification] = useState(null);
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+
+            // Load sample data on first use
+            useEffect(() => {
+                const storedItems = localStorage.getItem('inventoryItems');
+                if (storedItems) {
+                    setItems(JSON.parse(storedItems));
+                    setShowSetupGuide(false);
+                } else {
+                    // Sample data
+                    const sampleData = [
+                        { id: 1, name: 'Hammer', box: '10', quantity: '1', notes: 'Claw hammer' },
+                        { id: 2, name: 'Hammerrite Paint', box: '15', quantity: '2', notes: 'Black metal paint' },
+                        { id: 3, name: 'Hand Saw', box: '10', quantity: '1', notes: '20 inch' },
+                        { id: 4, name: 'Screwdriver Set', box: '10', quantity: '1', notes: 'Phillips and flathead' },
+                        { id: 5, name: 'Drill', box: '5', quantity: '1', notes: 'Cordless 20V' },
+                        { id: 6, name: 'Level', box: '12', quantity: '1', notes: '2 foot aluminum' },
+                    ];
+                    setItems(sampleData);
+                }
+            }, []);
+
+            // Save items to localStorage
+            useEffect(() => {
+                if (items.length > 0) {
+                    localStorage.setItem('inventoryItems', JSON.stringify(items));
+                }
+            }, [items]);
+
+            // Filter items based on search
+            useEffect(() => {
+                if (searchQuery.trim() === '') {
+                    setFilteredItems([]);
+                } else {
+                    const query = searchQuery.toLowerCase();
+                    const filtered = items.filter(item =>
+                        item.name.toLowerCase().includes(query) ||
+                        item.box.toLowerCase().includes(query) ||
+                        (item.notes && item.notes.toLowerCase().includes(query))
+                    );
+                    setFilteredItems(filtered);
+                }
+            }, [searchQuery, items]);
+
+            // Show message helper
+            const showMessage = (text, type = 'success') => {
+                setMessage({ text, type });
+                setTimeout(() => setMessage({ text: '', type: '' }), 3000);
+            };
+
+            // Add or update item
+            const handleSaveItem = () => {
+                if (!formData.name || !formData.box) {
+                    showMessage('Please fill in item name and box number', 'error');
+                    return;
+                }
+
+                if (editingItem) {
+                    // Update existing
+                    setItems(items.map(item => 
+                        item.id === editingItem.id ? { ...item, ...formData } : item
+                    ));
+                    showMessage('Item updated!');
+                } else {
+                    // Add new
+                    const newItem = {
+                        id: Date.now(),
+                        ...formData
+                    };
+                    setItems([...items, newItem]);
+                    showMessage('Item added!');
+                }
+
+                // Reset form
+                setFormData({ name: '', box: '', quantity: '1', notes: '', photo: null });
+                setEditingItem(null);
+                setView('search');
+            };
+
+            // Delete item
+            const handleDeleteItem = (id) => {
+                if (confirm('Are you sure you want to delete this item?')) {
+                    setItems(items.filter(item => item.id !== id));
+                    showMessage('Item deleted');
+                }
+            };
+
+            // Start editing
+            const handleEditItem = (item) => {
+                setEditingItem(item);
+                setFormData({
+                    name: item.name,
+                    box: item.box,
+                    quantity: item.quantity,
+                    notes: item.notes || '',
+                    photo: item.photo || null
+                });
+                setView('add');
+            };
+
+            // Sync with Google Sheets
+            const syncWithSheets = async () => {
+                if (!settings.googleSheetsUrl) {
+                    showMessage('Please configure Google Sheets URL in settings', 'error');
+                    return;
+                }
+
+                setIsLoading(true);
+                try {
+                    const response = await fetch(settings.googleSheetsUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'getAll' })
+                    });
+                    
+                    const data = await response.json();
+                    if (data.items) {
+                        setItems(data.items);
+                        showMessage('Synced with Google Sheets!');
+                    }
+                } catch (error) {
+                    showMessage('Failed to sync with Google Sheets', 'error');
+                    console.error(error);
+                }
+                setIsLoading(false);
+            };
+
+            // AI Voice Entry
+            const startVoiceRecording = () => {
+                if (!settings.aiEnabled) {
+                    showMessage('Please enable AI features in settings', 'error');
+                    return;
+                }
+
+                if ('webkitSpeechRecognition' in window) {
+                    const recognition = new webkitSpeechRecognition();
+                    recognition.continuous = false;
+                    recognition.interimResults = false;
+
+                    recognition.onstart = () => {
+                        setIsRecording(true);
+                        setTranscript('Listening...');
+                    };
+
+                    recognition.onresult = async (event) => {
+                        const spokenText = event.results[0][0].transcript;
+                        setTranscript(spokenText);
+                        
+                        // Process with AI
+                        await processVoiceCommand(spokenText);
+                    };
+
+                    recognition.onerror = () => {
+                        showMessage('Voice recognition error', 'error');
+                        setIsRecording(false);
+                    };
+
+                    recognition.onend = () => {
+                        setIsRecording(false);
+                    };
+
+                    recognition.start();
+                } else {
+                    showMessage('Voice recognition not supported', 'error');
+                }
+            };
+
+            // Process voice command with AI
+            const processVoiceCommand = async (text) => {
+                setIsLoading(true);
+                try {
+                    const response = await fetch(`${settings.ollamaUrl}/api/generate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            model: 'llama3.1:8b',
+                            prompt: `Extract tools and box number from: "${text}". Return ONLY JSON: {"box": "number", "items": ["item1", "item2"]}`,
+                            stream: false
+                        })
+                    });
+
+                    const data = await response.json();
+                    const parsed = JSON.parse(data.response);
+                    
+                    // Add items
+                    const newItems = parsed.items.map(itemName => ({
+                        id: Date.now() + Math.random(),
+                        name: itemName,
+                        box: parsed.box,
+                        quantity: '1',
+                        notes: 'Added via voice'
+                    }));
+                    
+                    setItems([...items, ...newItems]);
+                    showMessage(`Added ${newItems.length} items to Box ${parsed.box}!`);
+                    setView('search');
+                } catch (error) {
+                    showMessage('AI processing failed. Using manual entry.', 'error');
+                    console.error(error);
+                }
+                setIsLoading(false);
+            };
+
+            // AI Photo Identification
+            const startCamera = async () => {
+                if (!settings.aiEnabled) {
+                    showMessage('Please enable AI features in settings', 'error');
+                    return;
+                }
+
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        video: { facingMode: 'environment' } 
+                    });
+                    if (videoRef.current) {
+                        videoRef.current.srcObject = stream;
+                    }
+                } catch (error) {
+                    showMessage('Camera access denied', 'error');
+                }
+            };
+
+            const capturePhoto = async () => {
+                if (canvasRef.current && videoRef.current) {
+                    const canvas = canvasRef.current;
+                    const video = videoRef.current;
+                    
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    canvas.getContext('2d').drawImage(video, 0, 0);
+                    
+                    const imageData = canvas.toDataURL('image/jpeg');
+                    setCapturedImage(imageData);
+                    
+                    // Stop camera
+                    video.srcObject.getTracks().forEach(track => track.stop());
+                    
+                    // Send to AI server
+                    await identifyWithAI(imageData);
+                }
+            };
+
+            const identifyWithAI = async (imageData) => {
+                setIsLoading(true);
+                try {
+                    const response = await fetch(`${settings.aiServerUrl}/identify`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ image: imageData })
+                    });
+
+                    const data = await response.json();
+                    setAiIdentification(data);
+                    showMessage('Tool identified by AI!');
+                } catch (error) {
+                    showMessage('AI identification failed. You can still add manually.', 'error');
+                    console.error(error);
+                }
+                setIsLoading(false);
+            };
+
+            // Save settings
+            const saveSettings = () => {
+                Object.keys(settings).forEach(key => {
+                    localStorage.setItem(key, settings[key]);
+                });
+                showMessage('Settings saved!');
+            };
+
+            // Get unique boxes
+            const uniqueBoxes = [...new Set(items.map(item => item.box))].sort((a, b) => {
+                const numA = parseInt(a);
+                const numB = parseInt(b);
+                return numA - numB;
+            });
+
+            // Render views
+            const renderSearch = () => (
+                <div className="p-4">
+                    <div className="mb-4">
+                        <div className="relative">
+                            <input
+                                type="text"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                placeholder="Search tools... (e.g., 'ha' for hammer)"
+                                className="w-full px-4 py-3 pl-12 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            />
+                            <SearchIcon className="absolute left-4 top-3.5 text-gray-400" />
+                        </div>
+                    </div>
+
+                    {searchQuery && filteredItems.length > 0 && (
+                        <div className="space-y-2">
+                            {filteredItems.map(item => (
+                                <div key={item.id} className="bg-white border-2 rounded-lg p-4 shadow-sm">
+                                    <div className="flex justify-between items-start mb-2">
+                                        <div>
+                                            <h3 className="font-bold text-lg">{item.name}</h3>
+                                            <p className="text-sm text-gray-600">Box {item.box}</p>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={() => handleEditItem(item)}
+                                                className="p-2 text-blue-600 hover:bg-blue-50 rounded"
+                                            >
+                                                <EditIcon />
+                                            </button>
+                                            <button
+                                                onClick={() => handleDeleteItem(item.id)}
+                                                className="p-2 text-red-600 hover:bg-red-50 rounded"
+                                            >
+                                                <TrashIcon />
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <p className="text-sm text-gray-700">Quantity: {item.quantity}</p>
+                                    {item.notes && (
+                                        <p className="text-sm text-gray-600 mt-1">{item.notes}</p>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {searchQuery && filteredItems.length === 0 && (
+                        <div className="text-center py-8 text-gray-500">
+                            No items found. Try a different search.
+                        </div>
+                    )}
+
+                    {!searchQuery && (
+                        <div className="text-center py-12">
+                            <SearchIcon className="mx-auto mb-4 text-gray-400" style={{width: 48, height: 48}} />
+                            <h3 className="text-xl font-semibold mb-2">Find Your Tools</h3>
+                            <p className="text-gray-600">Start typing to search your inventory</p>
+                        </div>
+                    )}
+                </div>
+            );
+
+            const renderAddEdit = () => (
+                <div className="p-4">
+                    <h2 className="text-2xl font-bold mb-4">
+                        {editingItem ? 'Edit Item' : 'Add New Item'}
+                    </h2>
+                    
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium mb-1">Item Name *</label>
+                            <input
+                                type="text"
+                                value={formData.name}
+                                onChange={(e) => setFormData({...formData, name: e.target.value})}
+                                placeholder="e.g., Hammer"
+                                className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium mb-1">Box Number *</label>
+                            <input
+                                type="text"
+                                value={formData.box}
+                                onChange={(e) => setFormData({...formData, box: e.target.value})}
+                                placeholder="e.g., 10"
+                                className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium mb-1">Quantity</label>
+                            <input
+                                type="number"
+                                value={formData.quantity}
+                                onChange={(e) => setFormData({...formData, quantity: e.target.value})}
+                                min="1"
+                                className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium mb-1">Notes (Optional)</label>
+                            <textarea
+                                value={formData.notes}
+                                onChange={(e) => setFormData({...formData, notes: e.target.value})}
+                                placeholder="Any additional details..."
+                                rows="3"
+                                className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
+                            />
+                        </div>
+
+                        <div className="flex gap-2 pt-4">
+                            <button
+                                onClick={handleSaveItem}
+                                className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700"
+                            >
+                                {editingItem ? 'Update Item' : 'Add Item'}
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setView('search');
+                                    setEditingItem(null);
+                                    setFormData({ name: '', box: '', quantity: '1', notes: '', photo: null });
+                                }}
+                                className="px-6 py-3 border-2 rounded-lg font-semibold hover:bg-gray-50"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            const renderBoxes = () => (
+                <div className="p-4">
+                    <h2 className="text-2xl font-bold mb-4">Browse by Box</h2>
+                    
+                    {uniqueBoxes.length === 0 ? (
+                        <div className="text-center py-12 text-gray-500">
+                            No boxes yet. Add items to get started!
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-2 gap-3">
+                            {uniqueBoxes.map(box => {
+                                const boxItems = items.filter(item => item.box === box);
+                                return (
+                                    <div key={box} className="bg-white border-2 rounded-lg p-4 shadow-sm">
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <BoxIcon />
+                                            <h3 className="font-bold text-lg">Box {box}</h3>
+                                        </div>
+                                        <p className="text-sm text-gray-600">{boxItems.length} items</p>
+                                        <div className="mt-2 space-y-1">
+                                            {boxItems.slice(0, 3).map(item => (
+                                                <p key={item.id} className="text-sm text-gray-700 truncate">
+                                                    • {item.name}
+                                                </p>
+                                            ))}
+                                            {boxItems.length > 3 && (
+                                                <p className="text-sm text-gray-500">
+                                                    +{boxItems.length - 3} more
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            );
+
+            const renderAIPhoto = () => (
+                <div className="p-4">
+                    <h2 className="text-2xl font-bold mb-4">AI Photo Identification</h2>
+                    
+                    {!capturedImage ? (
+                        <div>
+                            <video
+                                ref={videoRef}
+                                autoPlay
+                                playsInline
+                                className="w-full rounded-lg mb-4"
+                            />
+                            <canvas ref={canvasRef} className="hidden" />
+                            
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={capturePhoto}
+                                    className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700"
+                                >
+                                    Capture Photo
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        if (videoRef.current && videoRef.current.srcObject) {
+                                            videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+                                        }
+                                        setView('search');
+                                    }}
+                                    className="px-6 py-3 border-2 rounded-lg font-semibold hover:bg-gray-50"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div>
+                            <img src={capturedImage} alt="Captured" className="w-full rounded-lg mb-4" />
+                            
+                            {aiIdentification && (
+                                <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 mb-4">
+                                    <h3 className="font-bold mb-2">AI Identified:</h3>
+                                    <p className="text-lg">{aiIdentification.tool}</p>
+                                    <p className="text-sm text-gray-600">
+                                        Confidence: {Math.round(aiIdentification.confidence * 100)}%
+                                    </p>
+                                    {aiIdentification.suggestedBox && (
+                                        <p className="text-sm text-gray-600">
+                                            Suggested Box: {aiIdentification.suggestedBox}
+                                        </p>
+                                    )}
+                                </div>
+                            )}
+                            
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => {
+                                        if (aiIdentification) {
+                                            setFormData({
+                                                name: aiIdentification.tool,
+                                                box: aiIdentification.suggestedBox || '',
+                                                quantity: '1',
+                                                notes: 'Identified by AI',
+                                                photo: capturedImage
+                                            });
+                                            setView('add');
+                                        }
+                                        setCapturedImage(null);
+                                        setAiIdentification(null);
+                                    }}
+                                    className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700"
+                                >
+                                    Add to Inventory
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setCapturedImage(null);
+                                        setAiIdentification(null);
+                                        startCamera();
+                                    }}
+                                    className="px-6 py-3 border-2 rounded-lg font-semibold hover:bg-gray-50"
+                                >
+                                    Retake
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+
+            const renderAIVoice = () => (
+                <div className="p-4">
+                    <h2 className="text-2xl font-bold mb-4">AI Voice Entry</h2>
+                    
+                    <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 mb-4">
+                        <h3 className="font-semibold mb-2">How to use:</h3>
+                        <p className="text-sm text-gray-700">
+                            Say something like: "Box 10 has hammer, screwdriver, and drill"
+                        </p>
+                    </div>
+
+                    <div className="text-center py-8">
+                        {isRecording ? (
+                            <div className="mb-4">
+                                <div className="animate-pulse">
+                                    <MicIcon className="mx-auto mb-2 text-red-500" style={{width: 64, height: 64}} />
+                                </div>
+                                <p className="text-lg font-semibold">Listening...</p>
+                            </div>
+                        ) : (
+                            <button
+                                onClick={startVoiceRecording}
+                                className="bg-blue-600 text-white px-8 py-4 rounded-full font-semibold hover:bg-blue-700 inline-flex items-center gap-2"
+                            >
+                                <MicIcon />
+                                Start Recording
+                            </button>
+                        )}
+                    </div>
+
+                    {transcript && (
+                        <div className="bg-gray-50 border-2 rounded-lg p-4 mb-4">
+                            <h3 className="font-semibold mb-2">You said:</h3>
+                            <p className="text-gray-700">{transcript}</p>
+                        </div>
+                    )}
+
+                    <button
+                        onClick={() => setView('search')}
+                        className="w-full py-3 border-2 rounded-lg font-semibold hover:bg-gray-50"
+                    >
+                        Back to Search
+                    </button>
+                </div>
+            );
+
+            const renderSettings = () => (
+                <div className="p-4">
+                    <h2 className="text-2xl font-bold mb-4">Settings</h2>
+                    
+                    <div className="space-y-4">
+                        <div>
+                            <h3 className="font-semibold mb-2">Google Sheets Integration</h3>
+                            <input
+                                type="text"
+                                value={settings.googleSheetsUrl}
+                                onChange={(e) => setSettings({...settings, googleSheetsUrl: e.target.value})}
+                                placeholder="Google Apps Script Web App URL"
+                                className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none mb-2"
+                            />
+                            <button
+                                onClick={syncWithSheets}
+                                disabled={!settings.googleSheetsUrl}
+                                className="w-full bg-green-600 text-white py-2 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-300"
+                            >
+                                Sync Now
+                            </button>
+                        </div>
+
+                        <div className="border-t-2 pt-4">
+                            <h3 className="font-semibold mb-2">AI Features</h3>
+                            <label className="flex items-center gap-2 mb-4">
+                                <input
+                                    type="checkbox"
+                                    checked={settings.aiEnabled}
+                                    onChange={(e) => setSettings({...settings, aiEnabled: e.target.checked})}
+                                    className="w-5 h-5"
+                                />
+                                <span>Enable AI Features (Photo ID & Voice)</span>
+                            </label>
+
+                            {settings.aiEnabled && (
+                                <>
+                                    <div className="mb-3">
+                                        <label className="block text-sm font-medium mb-1">Ollama URL</label>
+                                        <input
+                                            type="text"
+                                            value={settings.ollamaUrl}
+                                            onChange={(e) => setSettings({...settings, ollamaUrl: e.target.value})}
+                                            placeholder="http://localhost:11434"
+                                            className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">AI Server URL</label>
+                                        <input
+                                            type="text"
+                                            value={settings.aiServerUrl}
+                                            onChange={(e) => setSettings({...settings, aiServerUrl: e.target.value})}
+                                            placeholder="http://localhost:8000"
+                                            className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        />
+                                    </div>
+                                </>
+                            )}
+                        </div>
+
+                        <div className="pt-4">
+                            <button
+                                onClick={saveSettings}
+                                className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700"
+                            >
+                                Save Settings
+                            </button>
+                        </div>
+
+                        <div className="border-t-2 pt-4">
+                            <h3 className="font-semibold mb-2">Data Management</h3>
+                            <p className="text-sm text-gray-600 mb-2">
+                                {items.length} items in inventory
+                            </p>
+                            <button
+                                onClick={() => {
+                                    const data = JSON.stringify(items, null, 2);
+                                    const blob = new Blob([data], { type: 'application/json' });
+                                    const url = URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.href = url;
+                                    a.download = 'inventory-backup.json';
+                                    a.click();
+                                    showMessage('Backup downloaded!');
+                                }}
+                                className="w-full bg-gray-600 text-white py-2 rounded-lg font-semibold hover:bg-gray-700"
+                            >
+                                Download Backup
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            const renderSetupGuide = () => (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-lg max-w-2xl w-full max-h-screen overflow-y-auto">
+                        <div className="p-6">
+                            <div className="flex justify-between items-start mb-4">
+                                <h2 className="text-2xl font-bold">Welcome to AI Tool Inventory! 🔧</h2>
+                                <button
+                                    onClick={() => setShowSetupGuide(false)}
+                                    className="p-2 hover:bg-gray-100 rounded"
+                                >
+                                    <XIcon />
+                                </button>
+                            </div>
+
+                            <div className="space-y-4">
+                                <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
+                                    <h3 className="font-bold mb-2">✅ Ready to Use Right Now!</h3>
+                                    <p className="text-sm">
+                                        Your app works immediately with sample data. Try searching and adding items!
+                                    </p>
+                                </div>
+
+                                <div className="border-2 rounded-lg p-4">
+                                    <h3 className="font-bold mb-2">🔗 Optional: Connect Google Sheets</h3>
+                                    <ol className="text-sm space-y-2 list-decimal list-inside">
+                                        <li>Create a Google Sheet with columns: Item Name, Box Number, Quantity, Notes</li>
+                                        <li>Go to Extensions → Apps Script</li>
+                                        <li>Paste the Apps Script code (see documentation)</li>
+                                        <li>Deploy as Web App</li>
+                                        <li>Copy the URL to Settings → Google Sheets URL</li>
+                                    </ol>
+                                </div>
+
+                                <div className="border-2 rounded-lg p-4">
+                                    <h3 className="font-bold mb-2">🤖 Optional: Enable AI Features</h3>
+                                    <p className="text-sm mb-2">
+                                        Requires setup on your computer with RTX 3090:
+                                    </p>
+                                    <ul className="text-sm space-y-1 list-disc list-inside">
+                                        <li>Install Ollama and download llama3.1:8b model</li>
+                                        <li>Run the AI photo identification server</li>
+                                        <li>Enable AI in Settings</li>
+                                    </ul>
+                                    <p className="text-sm text-gray-600 mt-2">
+                                        See full documentation for detailed setup instructions.
+                                    </p>
+                                </div>
+
+                                <button
+                                    onClick={() => setShowSetupGuide(false)}
+                                    className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700"
+                                >
+                                    Got It! Let's Start
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            // Start camera when view changes to aiPhoto
+            useEffect(() => {
+                if (view === 'aiPhoto') {
+                    startCamera();
+                }
+            }, [view]);
+
+            return (
+                <div className="min-h-screen bg-gray-50">
+                    {/* Header */}
+                    <header className="bg-blue-600 text-white p-4 shadow-lg">
+                        <h1 className="text-xl font-bold">🔧 AI Tool Inventory</h1>
+                    </header>
+
+                    {/* Message Toast */}
+                    {message.text && (
+                        <div className={`fixed top-20 left-1/2 transform -translate-x-1/2 z-50 px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 ${
+                            message.type === 'success' ? 'bg-green-600' : 'bg-red-600'
+                        } text-white`}>
+                            {message.type === 'success' ? <CheckIcon /> : <AlertIcon />}
+                            {message.text}
+                        </div>
+                    )}
+
+                    {/* Loading Overlay */}
+                    {isLoading && (
+                        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                            <div className="bg-white rounded-lg p-6 text-center">
+                                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                                <p className="font-semibold">Processing...</p>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Main Content */}
+                    <main className="pb-20">
+                        {view === 'search' && renderSearch()}
+                        {view === 'add' && renderAddEdit()}
+                        {view === 'boxes' && renderBoxes()}
+                        {view === 'aiPhoto' && renderAIPhoto()}
+                        {view === 'aiVoice' && renderAIVoice()}
+                        {view === 'settings' && renderSettings()}
+                    </main>
+
+                    {/* Bottom Navigation */}
+                    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t-2 shadow-lg">
+                        <div className="flex justify-around py-2">
+                            <button
+                                onClick={() => setView('search')}
+                                className={`flex flex-col items-center p-2 ${view === 'search' ? 'text-blue-600' : 'text-gray-600'}`}
+                            >
+                                <SearchIcon />
+                                <span className="text-xs mt-1">Search</span>
+                            </button>
+
+                            <button
+                                onClick={() => {
+                                    setEditingItem(null);
+                                    setFormData({ name: '', box: '', quantity: '1', notes: '', photo: null });
+                                    setView('add');
+                                }}
+                                className={`flex flex-col items-center p-2 ${view === 'add' ? 'text-blue-600' : 'text-gray-600'}`}
+                            >
+                                <PlusIcon />
+                                <span className="text-xs mt-1">Add</span>
+                            </button>
+
+                            <button
+                                onClick={() => setView('boxes')}
+                                className={`flex flex-col items-center p-2 ${view === 'boxes' ? 'text-blue-600' : 'text-gray-600'}`}
+                            >
+                                <BoxIcon />
+                                <span className="text-xs mt-1">Boxes</span>
+                            </button>
+
+                            {settings.aiEnabled && (
+                                <>
+                                    <button
+                                        onClick={() => setView('aiPhoto')}
+                                        className={`flex flex-col items-center p-2 ${view === 'aiPhoto' ? 'text-blue-600' : 'text-gray-600'}`}
+                                    >
+                                        <CameraIcon />
+                                        <span className="text-xs mt-1">AI Photo</span>
+                                    </button>
+
+                                    <button
+                                        onClick={() => setView('aiVoice')}
+                                        className={`flex flex-col items-center p-2 ${view === 'aiVoice' ? 'text-blue-600' : 'text-gray-600'}`}
+                                    >
+                                        <MicIcon />
+                                        <span className="text-xs mt-1">AI Voice</span>
+                                    </button>
+                                </>
+                            )}
+
+                            <button
+                                onClick={() => setView('settings')}
+                                className={`flex flex-col items-center p-2 ${view === 'settings' ? 'text-blue-600' : 'text-gray-600'}`}
+                            >
+                                <SettingsIcon />
+                                <span className="text-xs mt-1">Settings</span>
+                            </button>
+                        </div>
+                    </nav>
+
+                    {/* Setup Guide Modal */}
+                    {showSetupGuide && renderSetupGuide()}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<InventoryApp />, document.getElementById('root'));
+    </script>
+</body>
+</html>
