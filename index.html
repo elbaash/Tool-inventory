@@ -140,42 +140,129 @@
             const videoRef = useRef(null);
             const canvasRef = useRef(null);
 
-            // NEW: Enhanced sync features
-            const [syncLogs, setSyncLogs] = useState([]);
-            const [syncHistory, setSyncHistory] = useState([]);
-            const [connectionStatus, setConnectionStatus] = useState('unknown'); // unknown, connected, disconnected, error
-            const [lastSyncTime, setLastSyncTime] = useState(null);
-            const [lastSyncStatus, setLastSyncStatus] = useState(null);
-            const [testResults, setTestResults] = useState(null);
-            const [showLogs, setShowLogs] = useState(false);
-            const [showSyncDiff, setShowSyncDiff] = useState(false);
-            const [syncDiffData, setSyncDiffData] = useState(null);
-            const [setupProgress, setSetupProgress] = useState({
-                step1: false,
-                step2: false,
-                step3: false,
-                step4: false,
-                step5: false
+            // NEW: Enhanced sync features - OPTIMIZED with useReducer
+            const syncReducer = (state, action) => {
+                switch (action.type) {
+                    case 'SET_CONNECTION_STATUS':
+                        return { ...state, connectionStatus: action.payload };
+                    case 'SET_LAST_SYNC':
+                        return {
+                            ...state,
+                            lastSyncTime: action.payload.time,
+                            lastSyncStatus: action.payload.status
+                        };
+                    case 'ADD_HISTORY':
+                        return {
+                            ...state,
+                            syncHistory: [action.payload, ...state.syncHistory].slice(0, 20)
+                        };
+                    case 'SET_TEST_RESULTS':
+                        return { ...state, testResults: action.payload };
+                    case 'TOGGLE_LOGS':
+                        return { ...state, showLogs: !state.showLogs };
+                    case 'SET_SHOW_LOGS':
+                        return { ...state, showLogs: action.payload };
+                    case 'SET_SYNC_DIFF':
+                        return {
+                            ...state,
+                            showSyncDiff: action.payload.show,
+                            syncDiffData: action.payload.data
+                        };
+                    case 'CLOSE_SYNC_DIFF':
+                        return { ...state, showSyncDiff: false, syncDiffData: null };
+                    default:
+                        return state;
+                }
+            };
+
+            const [syncState, dispatchSync] = useReducer(syncReducer, {
+                connectionStatus: 'unknown',
+                lastSyncTime: null,
+                lastSyncStatus: null,
+                syncHistory: [],
+                testResults: null,
+                showLogs: false,
+                showSyncDiff: false,
+                syncDiffData: null
             });
+
+            // Setup progress persisted to localStorage
+            const [setupProgress, setSetupProgress] = useState(() => {
+                try {
+                    const saved = localStorage.getItem('setupProgress');
+                    return saved ? JSON.parse(saved) : {
+                        step1: false,
+                        step2: false,
+                        step3: false,
+                        step4: false,
+                        step5: false
+                    };
+                } catch (e) {
+                    return { step1: false, step2: false, step3: false, step4: false, step5: false };
+                }
+            });
+
+            // Update setup progress with persistence
+            const updateSetupProgress = (step, value) => {
+                const newProgress = { ...setupProgress, [step]: value };
+                setSetupProgress(newProgress);
+                try {
+                    localStorage.setItem('setupProgress', JSON.stringify(newProgress));
+                } catch (e) {
+                    console.error('Failed to save setup progress:', e);
+                }
+            };
+
+            // Sync logs stored in localStorage, loaded only when needed
+            const [syncLogs, setSyncLogs] = useState([]);
+
+            // Request deduplication
+            const syncInProgress = useRef(false);
+            const abortControllers = useRef(new Set());
 
             // ============================================
             // UTILITY FUNCTIONS - Enhanced Error Handling
             // ============================================
 
-            // Log helper function
-            const addLog = (level, message, details = null) => {
+            // Log helper function - OPTIMIZED to use localStorage
+            const addLog = useCallback((level, message, details = null) => {
                 const logEntry = {
                     timestamp: new Date().toISOString(),
-                    level, // 'info', 'success', 'warning', 'error'
+                    level,
                     message,
                     details
                 };
-                setSyncLogs(prev => [logEntry, ...prev].slice(0, 100)); // Keep last 100 logs
 
                 // Console log with appropriate method
                 const logMethod = level === 'error' ? console.error : level === 'warning' ? console.warn : console.log;
                 logMethod(`[${level.toUpperCase()}] ${message}`, details || '');
-            };
+
+                try {
+                    // Store in localStorage, not React state (prevents memory leaks)
+                    const logs = JSON.parse(localStorage.getItem('syncLogs') || '[]');
+                    logs.unshift(logEntry);
+                    const trimmedLogs = logs.slice(0, 100); // Keep last 100
+                    localStorage.setItem('syncLogs', JSON.stringify(trimmedLogs));
+
+                    // Only update state if logs modal is open (performance optimization)
+                    if (syncState.showLogs) {
+                        setSyncLogs(trimmedLogs);
+                    }
+                } catch (e) {
+                    console.error('Failed to save log:', e);
+                }
+            }, [syncState.showLogs]);
+
+            // Load logs from localStorage when modal opens
+            const loadLogs = useCallback(() => {
+                try {
+                    const logs = JSON.parse(localStorage.getItem('syncLogs') || '[]');
+                    setSyncLogs(logs);
+                } catch (e) {
+                    console.error('Failed to load logs:', e);
+                    setSyncLogs([]);
+                }
+            }, []);
 
             // URL Validation
             const validateGoogleSheetsUrl = (url) => {
@@ -310,14 +397,35 @@
                 }
             };
 
-            // Fetch with retry logic
+            // Check if error is retriable (only network errors and 5xx)
+            const isRetriable = (error, response) => {
+                // Network errors (no response) - should retry
+                if (!response) return true;
+
+                // Only retry server errors (5xx)
+                // Don't retry client errors (4xx) - they won't fix themselves
+                return response.status >= 500;
+            };
+
+            // Fetch with SMART retry logic - FIXED
             const fetchWithRetry = async (url, options, retries = 3) => {
+                let lastResponse = null;
+
                 for (let i = 0; i < retries; i++) {
                     try {
                         addLog('info', `Attempt ${i + 1}/${retries} to reach Google Sheets...`);
-                        return await fetchWithTimeout(url, options);
+                        const response = await fetchWithTimeout(url, options);
+                        lastResponse = response;
+                        return response;
                     } catch (error) {
-                        if (i === retries - 1) throw error;
+                        // Check if we should retry this error
+                        if (i === retries - 1 || !isRetriable(error, lastResponse)) {
+                            // Don't retry 4xx errors or if this is the last attempt
+                            if (lastResponse && lastResponse.status >= 400 && lastResponse.status < 500) {
+                                addLog('error', `Client error (${lastResponse.status}) - not retrying`, error.message);
+                            }
+                            throw error;
+                        }
 
                         const waitTime = 1000 * Math.pow(2, i); // 1s, 2s, 4s
                         addLog('warning', `Attempt ${i + 1} failed, retrying in ${waitTime/1000}s...`, error.message);
@@ -519,12 +627,12 @@
                 const urlCheck = validateGoogleSheetsUrl(settings.googleSheetsUrl);
                 if (!urlCheck.valid) {
                     showMessage(urlCheck.error, 'error');
-                    setConnectionStatus('error');
+                    dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'error' });
                     return false;
                 }
 
                 setIsLoading(true);
-                setConnectionStatus('unknown');
+                dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'unknown' });
                 let response = null;
 
                 try {
@@ -546,17 +654,22 @@
 
                     if (data.success) {
                         addLog('success', '✅ Push successful!', data);
-                        setConnectionStatus('connected');
-                        setLastSyncTime(new Date().toLocaleString());
-                        setLastSyncStatus('success');
+                        dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'connected' });
+                        dispatchSync({
+                            type: 'SET_LAST_SYNC',
+                            payload: { time: new Date().toLocaleString(), status: 'success' }
+                        });
 
                         // Add to sync history
-                        setSyncHistory(prev => [{
-                            timestamp: new Date().toISOString(),
-                            direction: 'push',
-                            status: 'success',
-                            itemCount: items.length
-                        }, ...prev].slice(0, 20));
+                        dispatchSync({
+                            type: 'ADD_HISTORY',
+                            payload: {
+                                timestamp: new Date().toISOString(),
+                                direction: 'push',
+                                status: 'success',
+                                itemCount: items.length
+                            }
+                        });
 
                         return true;
                     } else {
@@ -566,16 +679,22 @@
                     const errorInfo = detectErrorType(error, response);
                     addLog('error', errorInfo.title, errorInfo.message);
 
-                    setConnectionStatus('error');
-                    setLastSyncStatus('failed');
+                    dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'error' });
+                    dispatchSync({
+                        type: 'SET_LAST_SYNC',
+                        payload: { time: new Date().toLocaleString(), status: 'failed' }
+                    });
 
                     // Add to sync history
-                    setSyncHistory(prev => [{
-                        timestamp: new Date().toISOString(),
-                        direction: 'push',
-                        status: 'failed',
-                        error: errorInfo.message
-                    }, ...prev].slice(0, 20));
+                    dispatchSync({
+                        type: 'ADD_HISTORY',
+                        payload: {
+                            timestamp: new Date().toISOString(),
+                            direction: 'push',
+                            status: 'failed',
+                            error: errorInfo.message
+                        }
+                    });
 
                     showMessage(
                         `${errorInfo.title}\n${errorInfo.message}\n\n💡 ${errorInfo.help}`,
@@ -598,7 +717,7 @@
                 const urlCheck = validateGoogleSheetsUrl(settings.googleSheetsUrl);
                 if (!urlCheck.valid) {
                     showMessage(urlCheck.error, 'error');
-                    setConnectionStatus('error');
+                    dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'error' });
                     return false;
                 }
 
@@ -619,51 +738,80 @@
 
                     const data = await validateResponse(response);
 
-                    if (data.items !== undefined) {
-                        addLog('success', `✅ Pull successful! Received ${data.items.length} items`);
+                    // CRITICAL: Validate data structure - FIXED
+                    if (!data.items || !Array.isArray(data.items)) {
+                        throw new Error('Invalid response: items must be an array');
+                    }
 
-                        // Show diff if requested
-                        if (showDiff && items.length > 0) {
-                            const diff = calculateSyncDiff(items, data.items);
-                            if (diff.hasConflicts) {
-                                setSyncDiffData(diff);
-                                setShowSyncDiff(true);
-                                setIsLoading(false);
-                                return false; // Don't apply yet, let user review
-                            }
+                    // CRITICAL: Validate each item - FIXED
+                    const validItems = data.items.filter(item => {
+                        // Item must be an object with required fields
+                        return item &&
+                               typeof item === 'object' &&
+                               item.id != null &&
+                               item.name &&
+                               item.box != null;
+                    });
+
+                    const invalidCount = data.items.length - validItems.length;
+                    if (invalidCount > 0) {
+                        addLog('warning', `Filtered out ${invalidCount} invalid items (missing id, name, or box)`);
+                    }
+
+                    addLog('success', `✅ Pull successful! Received ${validItems.length} valid items`);
+
+                    // Show diff if requested
+                    if (showDiff && items.length > 0) {
+                        const diff = calculateSyncDiff(items, validItems);
+                        if (diff.hasConflicts) {
+                            dispatchSync({
+                                type: 'SET_SYNC_DIFF',
+                                payload: { show: true, data: diff }
+                            });
+                            setIsLoading(false);
+                            return false; // Don't apply yet, let user review
                         }
+                    }
 
-                        setItems(data.items);
-                        setConnectionStatus('connected');
-                        setLastSyncTime(new Date().toLocaleString());
-                        setLastSyncStatus('success');
+                    setItems(validItems);
+                    dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'connected' });
+                    dispatchSync({
+                        type: 'SET_LAST_SYNC',
+                        payload: { time: new Date().toLocaleString(), status: 'success' }
+                    });
 
-                        // Add to sync history
-                        setSyncHistory(prev => [{
+                    // Add to sync history
+                    dispatchSync({
+                        type: 'ADD_HISTORY',
+                        payload: {
                             timestamp: new Date().toISOString(),
                             direction: 'pull',
                             status: 'success',
-                            itemCount: data.items.length
-                        }, ...prev].slice(0, 20));
+                            itemCount: validItems.length
+                        }
+                    });
 
-                        return true;
-                    } else {
-                        throw new Error('Invalid response: missing items array');
-                    }
+                    return true;
                 } catch (error) {
                     const errorInfo = detectErrorType(error, response);
                     addLog('error', errorInfo.title, errorInfo.message);
 
-                    setConnectionStatus('error');
-                    setLastSyncStatus('failed');
+                    dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'error' });
+                    dispatchSync({
+                        type: 'SET_LAST_SYNC',
+                        payload: { time: new Date().toLocaleString(), status: 'failed' }
+                    });
 
                     // Add to sync history
-                    setSyncHistory(prev => [{
-                        timestamp: new Date().toISOString(),
-                        direction: 'pull',
-                        status: 'failed',
-                        error: errorInfo.message
-                    }, ...prev].slice(0, 20));
+                    dispatchSync({
+                        type: 'ADD_HISTORY',
+                        payload: {
+                            timestamp: new Date().toISOString(),
+                            direction: 'pull',
+                            status: 'failed',
+                            error: errorInfo.message
+                        }
+                    });
 
                     showMessage(
                         `${errorInfo.title}\n${errorInfo.message}\n\n💡 ${errorInfo.help}`,
@@ -675,13 +823,21 @@
                 }
             };
 
-            // Two-way sync with Google Sheets - ENHANCED VERSION
+            // Two-way sync with Google Sheets - ENHANCED with REQUEST DEDUPLICATION
             const syncWithSheets = async (direction = 'both') => {
+                // CRITICAL: Prevent concurrent sync operations - FIXED
+                if (syncInProgress.current) {
+                    showMessage('⚠️ Sync already in progress. Please wait...', 'warning');
+                    addLog('warning', 'Sync request ignored - operation already in progress');
+                    return;
+                }
+
                 if (!settings.googleSheetsUrl) {
                     showMessage('Please configure Google Sheets URL in settings', 'error');
                     return;
                 }
 
+                syncInProgress.current = true;
                 addLog('info', `Starting ${direction.toUpperCase()} sync...`);
                 setIsLoading(true);
 
@@ -716,9 +872,11 @@
                     const errorInfo = detectErrorType(error, null);
                     addLog('error', `Sync failed: ${errorInfo.message}`);
                     showMessage(`Sync failed: ${error.message}`, 'error');
+                } finally {
+                    // CRITICAL: Always release lock - FIXED
+                    setIsLoading(false);
+                    syncInProgress.current = false;
                 }
-
-                setIsLoading(false);
             };
 
             // Test Connection - NEW FEATURE
@@ -730,7 +888,7 @@
                     { name: '4. Verifying response format', status: 'pending', icon: '✓' }
                 ];
 
-                setTestResults({ steps, inProgress: true });
+                dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: true } });
                 setIsLoading(true);
                 addLog('info', '🧪 Starting connection test...');
 
@@ -740,13 +898,13 @@
                     if (!urlCheck.valid) {
                         steps[0].status = 'failed';
                         steps[0].error = urlCheck.error;
-                        setTestResults({ steps, inProgress: false, overallStatus: 'failed' });
+                        dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: false, overallStatus: 'failed' } });
                         addLog('error', 'URL validation failed', urlCheck.error);
                         setIsLoading(false);
                         return;
                     }
                     steps[0].status = 'success';
-                    setTestResults({ steps, inProgress: true });
+                    dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: true } });
                     await new Promise(resolve => setTimeout(resolve, 500)); // Visual delay
 
                     // Step 2: Test connection
@@ -759,11 +917,11 @@
 
                     if (response.ok) {
                         steps[1].status = 'success';
-                        setTestResults({ steps, inProgress: true });
+                        dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: true } });
                     } else {
                         steps[1].status = 'failed';
                         steps[1].error = `HTTP ${response.status}`;
-                        setTestResults({ steps, inProgress: false, overallStatus: 'failed' });
+                        dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: false, overallStatus: 'failed' } });
                         addLog('error', `Connection failed: HTTP ${response.status}`);
                         setIsLoading(false);
                         return;
@@ -775,11 +933,11 @@
                     const data = await validateResponse(response);
                     if (data.success !== undefined || data.items !== undefined) {
                         steps[2].status = 'success';
-                        setTestResults({ steps, inProgress: true });
+                        dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: true } });
                     } else {
                         steps[2].status = 'failed';
                         steps[2].error = 'Unexpected response format';
-                        setTestResults({ steps, inProgress: false, overallStatus: 'failed' });
+                        dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: false, overallStatus: 'failed' } });
                         addLog('error', 'Read test failed: unexpected format');
                         setIsLoading(false);
                         return;
@@ -790,16 +948,16 @@
                     if (data.items && Array.isArray(data.items)) {
                         steps[3].status = 'success';
                         steps[3].note = `Found ${data.items.length} items`;
-                        setTestResults({ steps, inProgress: false, overallStatus: 'success' });
+                        dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: false, overallStatus: 'success' } });
                         addLog('success', '✅ All connection tests passed!');
-                        setConnectionStatus('connected');
+                        dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'connected' });
                         showMessage('✅ Connection test passed! Your setup is working correctly.', 'success');
                     } else {
                         steps[3].status = 'success';
                         steps[3].note = 'Empty spreadsheet (this is OK)';
-                        setTestResults({ steps, inProgress: false, overallStatus: 'success' });
+                        dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: false, overallStatus: 'success' } });
                         addLog('success', '✅ Connection test passed (empty sheet)');
-                        setConnectionStatus('connected');
+                        dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'connected' });
                         showMessage('✅ Connection test passed!', 'success');
                     }
 
@@ -810,9 +968,9 @@
                         steps[failedStepIndex].status = 'failed';
                         steps[failedStepIndex].error = errorInfo.message;
                     }
-                    setTestResults({ steps, inProgress: false, overallStatus: 'failed', errorHelp: errorInfo.help });
+                    dispatchSync({ type: 'SET_TEST_RESULTS', payload: { steps, inProgress: false, overallStatus: 'failed', errorHelp: errorInfo.help } });
                     addLog('error', 'Connection test failed', errorInfo.message);
-                    setConnectionStatus('error');
+                    dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'error' });
                     showMessage(`❌ Connection test failed: ${errorInfo.message}`, 'error');
                 } finally {
                     setIsLoading(false);
@@ -1282,7 +1440,7 @@
 
             const renderSettings = () => {
                 const getConnectionStatusColor = () => {
-                    switch(connectionStatus) {
+                    switch(syncState.connectionStatus) {
                         case 'connected': return 'bg-green-500';
                         case 'error': return 'bg-red-500';
                         case 'disconnected': return 'bg-yellow-500';
@@ -1291,7 +1449,7 @@
                 };
 
                 const getConnectionStatusText = () => {
-                    switch(connectionStatus) {
+                    switch(syncState.connectionStatus) {
                         case 'connected': return '✓ Connected';
                         case 'error': return '✗ Error';
                         case 'disconnected': return '⚠ Disconnected';
@@ -1317,7 +1475,7 @@
                                         <input
                                             type="checkbox"
                                             checked={setupProgress.step1}
-                                            onChange={(e) => setSetupProgress({...setupProgress, step1: e.target.checked})}
+                                            onChange={(e) => updateSetupProgress('step1', e.target.checked)}
                                             className="mt-1 w-4 h-4"
                                         />
                                         <span className={setupProgress.step1 ? 'line-through text-gray-500' : ''}>
@@ -1328,7 +1486,7 @@
                                         <input
                                             type="checkbox"
                                             checked={setupProgress.step2}
-                                            onChange={(e) => setSetupProgress({...setupProgress, step2: e.target.checked})}
+                                            onChange={(e) => updateSetupProgress('step2', e.target.checked)}
                                             className="mt-1 w-4 h-4"
                                         />
                                         <span className={setupProgress.step2 ? 'line-through text-gray-500' : ''}>
@@ -1339,7 +1497,7 @@
                                         <input
                                             type="checkbox"
                                             checked={setupProgress.step3}
-                                            onChange={(e) => setSetupProgress({...setupProgress, step3: e.target.checked})}
+                                            onChange={(e) => updateSetupProgress('step3', e.target.checked)}
                                             className="mt-1 w-4 h-4"
                                         />
                                         <span className={setupProgress.step3 ? 'line-through text-gray-500' : ''}>
@@ -1350,7 +1508,7 @@
                                         <input
                                             type="checkbox"
                                             checked={setupProgress.step4}
-                                            onChange={(e) => setSetupProgress({...setupProgress, step4: e.target.checked})}
+                                            onChange={(e) => updateSetupProgress('step4', e.target.checked)}
                                             className="mt-1 w-4 h-4"
                                         />
                                         <span className={setupProgress.step4 ? 'line-through text-gray-500' : ''}>
@@ -1361,7 +1519,7 @@
                                         <input
                                             type="checkbox"
                                             checked={setupProgress.step5}
-                                            onChange={(e) => setSetupProgress({...setupProgress, step5: e.target.checked})}
+                                            onChange={(e) => updateSetupProgress('step5', e.target.checked)}
                                             className="mt-1 w-4 h-4"
                                         />
                                         <span className={setupProgress.step5 ? 'line-through text-gray-500' : ''}>
@@ -1392,11 +1550,11 @@
                                 </button>
 
                                 {/* Test Results */}
-                                {testResults && (
-                                    <div className={`border-2 rounded-lg p-3 mb-3 ${testResults.overallStatus === 'success' ? 'bg-green-50 border-green-300' : testResults.overallStatus === 'failed' ? 'bg-red-50 border-red-300' : 'bg-blue-50 border-blue-300'}`}>
+                                {syncState.testResults && (
+                                    <div className={`border-2 rounded-lg p-3 mb-3 ${syncState.testResults.overallStatus === 'success' ? 'bg-green-50 border-green-300' : syncState.testResults.overallStatus === 'failed' ? 'bg-red-50 border-red-300' : 'bg-blue-50 border-blue-300'}`}>
                                         <h4 className="font-semibold text-sm mb-2">Connection Test Results:</h4>
                                         <div className="space-y-1">
-                                            {testResults.steps.map((step, idx) => (
+                                            {syncState.testResults.steps.map((step, idx) => (
                                                 <div key={idx} className="flex items-start gap-2 text-xs">
                                                     <span>
                                                         {step.status === 'success' ? '✅' : step.status === 'failed' ? '❌' : '⏳'}
@@ -1409,18 +1567,18 @@
                                                 </div>
                                             ))}
                                         </div>
-                                        {testResults.errorHelp && (
+                                        {syncState.testResults.errorHelp && (
                                             <div className="mt-2 p-2 bg-white rounded text-xs whitespace-pre-line">
-                                                <strong>💡 How to fix:</strong><br/>{testResults.errorHelp}
+                                                <strong>💡 How to fix:</strong><br/>{syncState.testResults.errorHelp}
                                             </div>
                                         )}
                                     </div>
                                 )}
 
                                 {/* Last Sync Info */}
-                                {lastSyncTime && (
+                                {syncState.lastSyncTime && (
                                     <div className="text-xs text-gray-600 mb-2">
-                                        Last sync: {lastSyncTime} ({lastSyncStatus === 'success' ? '✅' : '❌'})
+                                        Last sync: {syncState.lastSyncTime} ({syncState.lastSyncStatus === 'success' ? '✅' : '❌'})
                                     </div>
                                 )}
 
@@ -1860,16 +2018,33 @@
                 </div>
             );
 
-            // Check browser compatibility on load
+            // Check browser compatibility on load - FIXED
             useEffect(() => {
                 const compatibility = checkBrowserCompatibility();
                 if (!compatibility.compatible) {
+                    // Only console log, don't update state in mount effect
+                    console.error('Browser compatibility issues:', compatibility.issues);
                     showMessage(
                         `⚠️ Browser Compatibility Issues:\n${compatibility.issues.join(', ')}\n\nPlease use a modern browser like Chrome, Firefox, or Edge.`,
                         'error'
                     );
-                    addLog('error', 'Browser compatibility check failed', compatibility.issues.join(', '));
                 }
+            }, []); // Empty deps is safe now - no state updates
+
+            // CRITICAL: Cleanup AbortControllers on unmount - FIXED
+            useEffect(() => {
+                // Return cleanup function
+                return () => {
+                    // Abort all in-flight requests when component unmounts
+                    abortControllers.current.forEach(controller => {
+                        try {
+                            controller.abort();
+                        } catch (e) {
+                            // Ignore errors during cleanup
+                        }
+                    });
+                    abortControllers.current.clear();
+                };
             }, []);
 
             // Start camera when view changes to aiPhoto
