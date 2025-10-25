@@ -722,7 +722,7 @@
                 }
 
                 setIsLoading(true);
-                setConnectionStatus('unknown');
+                dispatchSync({ type: 'SET_CONNECTION_STATUS', payload: 'unknown' });
                 let response = null;
 
                 try {
@@ -1637,7 +1637,10 @@
                                 {/* View Logs and History Buttons */}
                                 <div className="grid grid-cols-2 gap-2">
                                     <button
-                                        onClick={() => setShowLogs(true)}
+                                        onClick={() => {
+                                            loadLogs();
+                                            dispatchSync({ type: 'SET_SHOW_LOGS', payload: true });
+                                        }}
                                         className="bg-gray-700 text-white py-2 px-3 rounded-lg text-xs font-semibold hover:bg-gray-800"
                                     >
                                         📋 View Logs ({syncLogs.length})
@@ -1646,7 +1649,7 @@
                                         onClick={() => setView('syncHistory')}
                                         className="bg-gray-700 text-white py-2 px-3 rounded-lg text-xs font-semibold hover:bg-gray-800"
                                     >
-                                        📊 Sync History ({syncHistory.length})
+                                        📊 Sync History ({syncState.syncHistory.length})
                                     </button>
                                 </div>
                             </div>
@@ -1778,7 +1781,7 @@
 
             // Logs Modal
             const renderLogsModal = () => {
-                if (!showLogs) return null;
+                if (!syncState.showLogs) return null;
 
                 return (
                     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -1786,7 +1789,7 @@
                             <div className="p-4 border-b-2 flex justify-between items-center">
                                 <h2 className="text-xl font-bold">Sync Logs</h2>
                                 <button
-                                    onClick={() => setShowLogs(false)}
+                                    onClick={() => dispatchSync({ type: 'SET_SHOW_LOGS', payload: false })}
                                     className="p-2 hover:bg-gray-100 rounded"
                                 >
                                     <XIcon />
@@ -1857,9 +1860,9 @@
 
             // Sync Diff Modal
             const renderSyncDiffModal = () => {
-                if (!showSyncDiff || !syncDiffData) return null;
+                if (!syncState.showSyncDiff || !syncState.syncDiffData) return null;
 
-                const { onlyLocal, onlyRemote, modified } = syncDiffData;
+                const { onlyLocal, onlyRemote, modified } = syncState.syncDiffData;
 
                 return (
                     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -1934,8 +1937,7 @@
                                 </div>
                                 <button
                                     onClick={async () => {
-                                        setShowSyncDiff(false);
-                                        setSyncDiffData(null);
+                                        dispatchSync({ type: 'CLOSE_SYNC_DIFF' });
                                         await pullFromSheets(false); // Pull without showing diff again
                                         showMessage('✅ Pulled from Google Sheets!');
                                     }}
@@ -1944,10 +1946,7 @@
                                     ⬇️ Continue with Pull (Replace Local Data)
                                 </button>
                                 <button
-                                    onClick={() => {
-                                        setShowSyncDiff(false);
-                                        setSyncDiffData(null);
-                                    }}
+                                    onClick={() => dispatchSync({ type: 'CLOSE_SYNC_DIFF' })}
                                     className="w-full border-2 py-3 rounded-lg font-semibold hover:bg-gray-50"
                                 >
                                     Cancel
