@@ -67,16 +67,35 @@ See the setup guide in the app for detailed instructions.
 
 ## Troubleshooting
 
-### Google Sheets sync not working?
+### "Failed to fetch" error?
 
-- Make sure you deployed the Apps Script as a Web App
-- Check that "Who has access" is set to "Anyone" in the deployment settings
-- Verify the Web App URL is correct in Settings
-- Check browser console for error messages
-- Try clicking "Pull" first to test the connection
+**IMPORTANT: You MUST create a NEW deployment, not update an existing one!**
+
+1. In Apps Script, click **Deploy > New deployment** (NOT "Manage deployments")
+2. Select type: **Web app**
+3. Set **Execute as: Me**
+4. Set **Who has access: Anyone**
+5. Click **Deploy**
+6. **Copy the NEW Web App URL** (it will be different from any old URL)
+7. Paste the NEW URL into your app Settings
+8. Save Settings and try again
+
+### Testing your deployment:
+
+1. Copy your Web App URL
+2. Paste it in a browser address bar
+3. You should see: `{"success":true,"message":"Tool Inventory API is running!...`
+4. If you see this, your deployment works!
+
+### Still not working?
+
+- **Clear browser cache** and reload the app
+- Make sure your Google Sheet has the header row: `ID | Item Name | Box Number | Quantity | Notes`
+- Check browser console (F12) for detailed error messages
+- Verify you're using the **exact** code from `google-apps-script.js`
 
 ### CORS errors?
 
-- Make sure you deployed the script as "Execute as: Me"
-- Redeploy the Apps Script if you made changes
-- Clear browser cache and try again
+- Make sure you used **"text/plain;charset=utf-8"** content-type (already set in the app)
+- Always create a **NEW deployment** when you update the script
+- The app should work without any CORS issues if deployed correctly

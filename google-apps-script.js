@@ -125,6 +125,17 @@ function updateAllItems(sheet, items) {
 }
 
 /**
+ * Handle GET requests for testing
+ */
+function doGet(e) {
+  return ContentService.createTextOutput(JSON.stringify({
+    success: true,
+    message: 'Tool Inventory API is running! Use POST requests to sync data.',
+    timestamp: new Date().toISOString()
+  })).setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
  * Optional: Test function to verify the script works
  * Run this from the Apps Script editor to test
  */
