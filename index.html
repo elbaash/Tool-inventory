@@ -140,6 +140,266 @@
             const videoRef = useRef(null);
             const canvasRef = useRef(null);
 
+            // NEW: Enhanced sync features
+            const [syncLogs, setSyncLogs] = useState([]);
+            const [syncHistory, setSyncHistory] = useState([]);
+            const [connectionStatus, setConnectionStatus] = useState('unknown'); // unknown, connected, disconnected, error
+            const [lastSyncTime, setLastSyncTime] = useState(null);
+            const [lastSyncStatus, setLastSyncStatus] = useState(null);
+            const [testResults, setTestResults] = useState(null);
+            const [showLogs, setShowLogs] = useState(false);
+            const [showSyncDiff, setShowSyncDiff] = useState(false);
+            const [syncDiffData, setSyncDiffData] = useState(null);
+            const [setupProgress, setSetupProgress] = useState({
+                step1: false,
+                step2: false,
+                step3: false,
+                step4: false,
+                step5: false
+            });
+
+            // ============================================
+            // UTILITY FUNCTIONS - Enhanced Error Handling
+            // ============================================
+
+            // Log helper function
+            const addLog = (level, message, details = null) => {
+                const logEntry = {
+                    timestamp: new Date().toISOString(),
+                    level, // 'info', 'success', 'warning', 'error'
+                    message,
+                    details
+                };
+                setSyncLogs(prev => [logEntry, ...prev].slice(0, 100)); // Keep last 100 logs
+
+                // Console log with appropriate method
+                const logMethod = level === 'error' ? console.error : level === 'warning' ? console.warn : console.log;
+                logMethod(`[${level.toUpperCase()}] ${message}`, details || '');
+            };
+
+            // URL Validation
+            const validateGoogleSheetsUrl = (url) => {
+                if (!url || url.trim() === '') {
+                    return { valid: false, error: 'URL is empty. Please enter your Google Apps Script URL.' };
+                }
+
+                // Must be HTTPS
+                if (!url.startsWith('https://')) {
+                    return { valid: false, error: 'URL must start with https:// for security.' };
+                }
+
+                // Must be Google Apps Script URL
+                if (!url.includes('script.google.com/macros/')) {
+                    return {
+                        valid: false,
+                        error: 'This doesn\'t look like a Google Apps Script URL. It should contain "script.google.com/macros/"'
+                    };
+                }
+
+                // Should end with /exec (deployed) not /dev (test mode)
+                if (url.includes('/dev')) {
+                    return {
+                        valid: false,
+                        error: '⚠️ This is a DEVELOPMENT URL. You must deploy the script properly!\n\nGo to Apps Script → Deploy → New deployment → Set as "Web app"'
+                    };
+                }
+
+                if (!url.endsWith('/exec')) {
+                    return {
+                        valid: false,
+                        error: 'URL should end with /exec. Make sure you copied the complete deployment URL.'
+                    };
+                }
+
+                return { valid: true };
+            };
+
+            // Error Type Detection
+            const detectErrorType = (error, response) => {
+                // Network error (no response at all)
+                if (!response && error.message === 'Failed to fetch') {
+                    return {
+                        type: 'NETWORK',
+                        title: '🌐 Network Error',
+                        message: 'Cannot reach Google Sheets',
+                        help: '• Check your internet connection\n• Check if firewall is blocking the request\n• Try opening the URL in a new browser tab',
+                        severity: 'error'
+                    };
+                }
+
+                // Timeout
+                if (error.message && error.message.includes('timeout')) {
+                    return {
+                        type: 'TIMEOUT',
+                        title: '⏱️ Request Timeout',
+                        message: 'Google Sheets took too long to respond',
+                        help: '• Your spreadsheet might be very large\n• Try again in a few moments\n• Check your internet speed',
+                        severity: 'warning'
+                    };
+                }
+
+                // CORS error (typical with wrong deployment)
+                if (!response || (error.message && error.message.toLowerCase().includes('cors'))) {
+                    return {
+                        type: 'CORS',
+                        title: '🚫 Access Blocked (CORS)',
+                        message: 'Deployment configuration issue detected',
+                        help: '📋 FIX THIS:\n1. Go to your Google Apps Script\n2. Click "Deploy" → "Manage deployments"\n3. Click the pencil icon (⚙️ Edit)\n4. Set "Who has access" to "Anyone"\n5. Click "Deploy"\n6. Copy the NEW URL and update settings',
+                        severity: 'error'
+                    };
+                }
+
+                // HTTP errors
+                if (response) {
+                    if (response.status === 401 || response.status === 403) {
+                        return {
+                            type: 'AUTH',
+                            title: '🔐 Authorization Failed',
+                            message: `Access denied (HTTP ${response.status})`,
+                            help: '• Click your Google Apps Script URL in a browser\n• Make sure you authorize the app\n• Ensure "Execute as: Me" is selected in deployment\n• Try re-deploying the script',
+                            severity: 'error'
+                        };
+                    }
+                    if (response.status === 404) {
+                        return {
+                            type: 'NOT_FOUND',
+                            title: '❓ Script Not Found',
+                            message: 'Could not find the Google Apps Script',
+                            help: '• Double-check you copied the COMPLETE URL\n• Make sure the script is actually deployed\n• Try deploying again and get a new URL',
+                            severity: 'error'
+                        };
+                    }
+                    if (response.status === 500 || response.status === 502) {
+                        return {
+                            type: 'SERVER',
+                            title: '⚙️ Google Script Error',
+                            message: 'Error in your Google Apps Script code',
+                            help: '• Open Apps Script editor\n• Check "Executions" log for errors\n• Make sure you copied the COMPLETE script code\n• Verify your spreadsheet has the correct columns',
+                            severity: 'error'
+                        };
+                    }
+                }
+
+                return {
+                    type: 'UNKNOWN',
+                    title: '❌ Sync Failed',
+                    message: error.message || 'Unknown error occurred',
+                    help: '• Check the logs for more details\n• Try testing the connection first\n• Contact support if issue persists',
+                    severity: 'error'
+                };
+            };
+
+            // Fetch with timeout
+            const fetchWithTimeout = async (url, options, timeout = 30000) => {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+                try {
+                    const response = await fetch(url, {
+                        ...options,
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    return response;
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    if (error.name === 'AbortError') {
+                        throw new Error('Request timeout - Google Sheets took too long to respond (>30s)');
+                    }
+                    throw error;
+                }
+            };
+
+            // Fetch with retry logic
+            const fetchWithRetry = async (url, options, retries = 3) => {
+                for (let i = 0; i < retries; i++) {
+                    try {
+                        addLog('info', `Attempt ${i + 1}/${retries} to reach Google Sheets...`);
+                        return await fetchWithTimeout(url, options);
+                    } catch (error) {
+                        if (i === retries - 1) throw error;
+
+                        const waitTime = 1000 * Math.pow(2, i); // 1s, 2s, 4s
+                        addLog('warning', `Attempt ${i + 1} failed, retrying in ${waitTime/1000}s...`, error.message);
+                        await new Promise(resolve => setTimeout(resolve, waitTime));
+                    }
+                }
+            };
+
+            // Response validation
+            const validateResponse = async (response) => {
+                // Check HTTP status first
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    addLog('error', `HTTP Error ${response.status}`, errorText.substring(0, 200));
+                    throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 100)}`);
+                }
+
+                // Check content type
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    addLog('error', 'Invalid response format (expected JSON)', text.substring(0, 200));
+                    throw new Error(`Expected JSON but got: ${contentType}. Response: ${text.substring(0, 100)}`);
+                }
+
+                // Parse JSON safely
+                try {
+                    const data = await response.json();
+                    addLog('success', 'Response received and parsed successfully', data);
+                    return data;
+                } catch (error) {
+                    addLog('error', 'JSON parsing failed', error.message);
+                    throw new Error('Invalid JSON response from Google Sheets: ' + error.message);
+                }
+            };
+
+            // Browser compatibility check
+            const checkBrowserCompatibility = () => {
+                const issues = [];
+
+                if (typeof fetch === 'undefined') {
+                    issues.push('fetch API not supported');
+                }
+                if (typeof localStorage === 'undefined') {
+                    issues.push('localStorage not supported');
+                }
+                if (typeof Promise === 'undefined') {
+                    issues.push('Promises not supported');
+                }
+
+                return {
+                    compatible: issues.length === 0,
+                    issues
+                };
+            };
+
+            // Calculate sync diff
+            const calculateSyncDiff = (localItems, remoteItems) => {
+                const localMap = new Map(localItems.map(item => [item.id, item]));
+                const remoteMap = new Map(remoteItems.map(item => [item.id, item]));
+
+                const onlyLocal = localItems.filter(item => !remoteMap.has(item.id));
+                const onlyRemote = remoteItems.filter(item => !localMap.has(item.id));
+                const modified = [];
+
+                localItems.forEach(localItem => {
+                    const remoteItem = remoteMap.get(localItem.id);
+                    if (remoteItem) {
+                        if (JSON.stringify(localItem) !== JSON.stringify(remoteItem)) {
+                            modified.push({ local: localItem, remote: remoteItem });
+                        }
+                    }
+                });
+
+                return {
+                    onlyLocal,
+                    onlyRemote,
+                    modified,
+                    hasConflicts: modified.length > 0 || (onlyLocal.length > 0 && onlyRemote.length > 0)
+                };
+            };
+
             // Load sample data on first use
             useEffect(() => {
                 const storedItems = localStorage.getItem('inventoryItems');
@@ -248,16 +508,30 @@
                 setView('add');
             };
 
-            // Push local items to Google Sheets
+            // Push local items to Google Sheets - ENHANCED VERSION
             const pushToSheets = async () => {
                 if (!settings.googleSheetsUrl) {
                     showMessage('Please configure Google Sheets URL in settings', 'error');
                     return false;
                 }
 
+                // Validate URL first
+                const urlCheck = validateGoogleSheetsUrl(settings.googleSheetsUrl);
+                if (!urlCheck.valid) {
+                    showMessage(urlCheck.error, 'error');
+                    setConnectionStatus('error');
+                    return false;
+                }
+
                 setIsLoading(true);
+                setConnectionStatus('unknown');
+                let response = null;
+
                 try {
-                    const response = await fetch(settings.googleSheetsUrl, {
+                    addLog('info', '📤 Starting PUSH to Google Sheets...');
+                    addLog('info', `Items to sync: ${items.length}`);
+
+                    response = await fetchWithRetry(settings.googleSheetsUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -266,85 +540,283 @@
                         })
                     });
 
-                    const data = await response.json();
+                    addLog('info', `Response status: ${response.status}`);
+
+                    const data = await validateResponse(response);
+
                     if (data.success) {
+                        addLog('success', '✅ Push successful!', data);
+                        setConnectionStatus('connected');
+                        setLastSyncTime(new Date().toLocaleString());
+                        setLastSyncStatus('success');
+
+                        // Add to sync history
+                        setSyncHistory(prev => [{
+                            timestamp: new Date().toISOString(),
+                            direction: 'push',
+                            status: 'success',
+                            itemCount: items.length
+                        }, ...prev].slice(0, 20));
+
                         return true;
                     } else {
-                        throw new Error(data.error || 'Failed to push to sheets');
+                        throw new Error(data.error || 'Unknown error from Google Sheets');
                     }
                 } catch (error) {
-                    showMessage('Failed to push to Google Sheets: ' + error.message, 'error');
-                    console.error(error);
+                    const errorInfo = detectErrorType(error, response);
+                    addLog('error', errorInfo.title, errorInfo.message);
+
+                    setConnectionStatus('error');
+                    setLastSyncStatus('failed');
+
+                    // Add to sync history
+                    setSyncHistory(prev => [{
+                        timestamp: new Date().toISOString(),
+                        direction: 'push',
+                        status: 'failed',
+                        error: errorInfo.message
+                    }, ...prev].slice(0, 20));
+
+                    showMessage(
+                        `${errorInfo.title}\n${errorInfo.message}\n\n💡 ${errorInfo.help}`,
+                        'error'
+                    );
                     return false;
                 } finally {
                     setIsLoading(false);
                 }
             };
 
-            // Pull items from Google Sheets
-            const pullFromSheets = async () => {
+            // Pull items from Google Sheets - ENHANCED VERSION
+            const pullFromSheets = async (showDiff = false) => {
                 if (!settings.googleSheetsUrl) {
                     showMessage('Please configure Google Sheets URL in settings', 'error');
                     return false;
                 }
 
+                // Validate URL first
+                const urlCheck = validateGoogleSheetsUrl(settings.googleSheetsUrl);
+                if (!urlCheck.valid) {
+                    showMessage(urlCheck.error, 'error');
+                    setConnectionStatus('error');
+                    return false;
+                }
+
                 setIsLoading(true);
+                setConnectionStatus('unknown');
+                let response = null;
+
                 try {
-                    const response = await fetch(settings.googleSheetsUrl, {
+                    addLog('info', '📥 Starting PULL from Google Sheets...');
+
+                    response = await fetchWithRetry(settings.googleSheetsUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ action: 'getAll' })
                     });
 
-                    const data = await response.json();
-                    if (data.items) {
+                    addLog('info', `Response status: ${response.status}`);
+
+                    const data = await validateResponse(response);
+
+                    if (data.items !== undefined) {
+                        addLog('success', `✅ Pull successful! Received ${data.items.length} items`);
+
+                        // Show diff if requested
+                        if (showDiff && items.length > 0) {
+                            const diff = calculateSyncDiff(items, data.items);
+                            if (diff.hasConflicts) {
+                                setSyncDiffData(diff);
+                                setShowSyncDiff(true);
+                                setIsLoading(false);
+                                return false; // Don't apply yet, let user review
+                            }
+                        }
+
                         setItems(data.items);
+                        setConnectionStatus('connected');
+                        setLastSyncTime(new Date().toLocaleString());
+                        setLastSyncStatus('success');
+
+                        // Add to sync history
+                        setSyncHistory(prev => [{
+                            timestamp: new Date().toISOString(),
+                            direction: 'pull',
+                            status: 'success',
+                            itemCount: data.items.length
+                        }, ...prev].slice(0, 20));
+
                         return true;
                     } else {
-                        throw new Error('Invalid response from Google Sheets');
+                        throw new Error('Invalid response: missing items array');
                     }
                 } catch (error) {
-                    showMessage('Failed to pull from Google Sheets: ' + error.message, 'error');
-                    console.error(error);
+                    const errorInfo = detectErrorType(error, response);
+                    addLog('error', errorInfo.title, errorInfo.message);
+
+                    setConnectionStatus('error');
+                    setLastSyncStatus('failed');
+
+                    // Add to sync history
+                    setSyncHistory(prev => [{
+                        timestamp: new Date().toISOString(),
+                        direction: 'pull',
+                        status: 'failed',
+                        error: errorInfo.message
+                    }, ...prev].slice(0, 20));
+
+                    showMessage(
+                        `${errorInfo.title}\n${errorInfo.message}\n\n💡 ${errorInfo.help}`,
+                        'error'
+                    );
                     return false;
                 } finally {
                     setIsLoading(false);
                 }
             };
 
-            // Two-way sync with Google Sheets
+            // Two-way sync with Google Sheets - ENHANCED VERSION
             const syncWithSheets = async (direction = 'both') => {
                 if (!settings.googleSheetsUrl) {
                     showMessage('Please configure Google Sheets URL in settings', 'error');
                     return;
                 }
 
+                addLog('info', `Starting ${direction.toUpperCase()} sync...`);
                 setIsLoading(true);
+
                 try {
                     if (direction === 'push' || direction === 'both') {
                         const pushSuccess = await pushToSheets();
-                        if (!pushSuccess && direction === 'both') {
+                        if (!pushSuccess) {
+                            setIsLoading(false);
+                            return; // Stop if push fails
+                        }
+
+                        if (direction === 'push') {
+                            showMessage('✅ Pushed to Google Sheets!');
                             setIsLoading(false);
                             return;
                         }
-                        if (direction === 'push') {
-                            showMessage('Pushed to Google Sheets!');
-                            setIsLoading(false);
-                            return;
+
+                        // For 'both' mode, add delay between push and pull to ensure data is saved
+                        if (direction === 'both') {
+                            addLog('info', 'Waiting 1 second before pulling to ensure data is saved...');
+                            await new Promise(resolve => setTimeout(resolve, 1000));
                         }
                     }
 
                     if (direction === 'pull' || direction === 'both') {
                         const pullSuccess = await pullFromSheets();
                         if (pullSuccess) {
-                            showMessage(direction === 'both' ? 'Two-way sync complete!' : 'Pulled from Google Sheets!');
+                            showMessage(direction === 'both' ? '✅ Two-way sync complete!' : '✅ Pulled from Google Sheets!');
                         }
                     }
                 } catch (error) {
-                    showMessage('Sync failed: ' + error.message, 'error');
-                    console.error(error);
+                    const errorInfo = detectErrorType(error, null);
+                    addLog('error', `Sync failed: ${errorInfo.message}`);
+                    showMessage(`Sync failed: ${error.message}`, 'error');
                 }
+
                 setIsLoading(false);
+            };
+
+            // Test Connection - NEW FEATURE
+            const testConnection = async () => {
+                const steps = [
+                    { name: '1. Validating URL format', status: 'pending', icon: '🔍' },
+                    { name: '2. Connecting to Google', status: 'pending', icon: '🌐' },
+                    { name: '3. Testing read access', status: 'pending', icon: '📖' },
+                    { name: '4. Verifying response format', status: 'pending', icon: '✓' }
+                ];
+
+                setTestResults({ steps, inProgress: true });
+                setIsLoading(true);
+                addLog('info', '🧪 Starting connection test...');
+
+                try {
+                    // Step 1: Validate URL
+                    const urlCheck = validateGoogleSheetsUrl(settings.googleSheetsUrl);
+                    if (!urlCheck.valid) {
+                        steps[0].status = 'failed';
+                        steps[0].error = urlCheck.error;
+                        setTestResults({ steps, inProgress: false, overallStatus: 'failed' });
+                        addLog('error', 'URL validation failed', urlCheck.error);
+                        setIsLoading(false);
+                        return;
+                    }
+                    steps[0].status = 'success';
+                    setTestResults({ steps, inProgress: true });
+                    await new Promise(resolve => setTimeout(resolve, 500)); // Visual delay
+
+                    // Step 2: Test connection
+                    addLog('info', 'Testing connection...');
+                    const response = await fetchWithTimeout(settings.googleSheetsUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'getAll' })
+                    }, 10000);
+
+                    if (response.ok) {
+                        steps[1].status = 'success';
+                        setTestResults({ steps, inProgress: true });
+                    } else {
+                        steps[1].status = 'failed';
+                        steps[1].error = `HTTP ${response.status}`;
+                        setTestResults({ steps, inProgress: false, overallStatus: 'failed' });
+                        addLog('error', `Connection failed: HTTP ${response.status}`);
+                        setIsLoading(false);
+                        return;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 500));
+
+                    // Step 3: Test read
+                    addLog('info', 'Testing read access...');
+                    const data = await validateResponse(response);
+                    if (data.success !== undefined || data.items !== undefined) {
+                        steps[2].status = 'success';
+                        setTestResults({ steps, inProgress: true });
+                    } else {
+                        steps[2].status = 'failed';
+                        steps[2].error = 'Unexpected response format';
+                        setTestResults({ steps, inProgress: false, overallStatus: 'failed' });
+                        addLog('error', 'Read test failed: unexpected format');
+                        setIsLoading(false);
+                        return;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 500));
+
+                    // Step 4: Verify format
+                    if (data.items && Array.isArray(data.items)) {
+                        steps[3].status = 'success';
+                        steps[3].note = `Found ${data.items.length} items`;
+                        setTestResults({ steps, inProgress: false, overallStatus: 'success' });
+                        addLog('success', '✅ All connection tests passed!');
+                        setConnectionStatus('connected');
+                        showMessage('✅ Connection test passed! Your setup is working correctly.', 'success');
+                    } else {
+                        steps[3].status = 'success';
+                        steps[3].note = 'Empty spreadsheet (this is OK)';
+                        setTestResults({ steps, inProgress: false, overallStatus: 'success' });
+                        addLog('success', '✅ Connection test passed (empty sheet)');
+                        setConnectionStatus('connected');
+                        showMessage('✅ Connection test passed!', 'success');
+                    }
+
+                } catch (error) {
+                    const errorInfo = detectErrorType(error, null);
+                    const failedStepIndex = steps.findIndex(s => s.status === 'pending');
+                    if (failedStepIndex !== -1) {
+                        steps[failedStepIndex].status = 'failed';
+                        steps[failedStepIndex].error = errorInfo.message;
+                    }
+                    setTestResults({ steps, inProgress: false, overallStatus: 'failed', errorHelp: errorInfo.help });
+                    addLog('error', 'Connection test failed', errorInfo.message);
+                    setConnectionStatus('error');
+                    showMessage(`❌ Connection test failed: ${errorInfo.message}`, 'error');
+                } finally {
+                    setIsLoading(false);
+                }
             };
 
             // AI Voice Entry
@@ -808,146 +1280,525 @@
                 </div>
             );
 
-            const renderSettings = () => (
-                <div className="p-4">
-                    <h2 className="text-2xl font-bold mb-4">Settings</h2>
+            const renderSettings = () => {
+                const getConnectionStatusColor = () => {
+                    switch(connectionStatus) {
+                        case 'connected': return 'bg-green-500';
+                        case 'error': return 'bg-red-500';
+                        case 'disconnected': return 'bg-yellow-500';
+                        default: return 'bg-gray-400';
+                    }
+                };
 
-                    <div className="space-y-4">
-                        <div>
-                            <h3 className="font-semibold mb-2">Google Sheets Integration</h3>
-                            <input
-                                type="text"
-                                value={settings.googleSheetsUrl}
-                                onChange={(e) => setSettings({...settings, googleSheetsUrl: e.target.value})}
-                                placeholder="Google Apps Script Web App URL"
-                                className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none mb-2"
-                            />
+                const getConnectionStatusText = () => {
+                    switch(connectionStatus) {
+                        case 'connected': return '✓ Connected';
+                        case 'error': return '✗ Error';
+                        case 'disconnected': return '⚠ Disconnected';
+                        default: return '? Unknown';
+                    }
+                };
 
-                            <label className="flex items-center gap-2 mb-3">
-                                <input
-                                    type="checkbox"
-                                    checked={settings.autoSync}
-                                    onChange={(e) => setSettings({...settings, autoSync: e.target.checked})}
-                                    className="w-4 h-4"
-                                />
-                                <span className="text-sm">Auto-sync changes to Google Sheets</span>
-                            </label>
+                return (
+                    <div className="p-4 pb-24">
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-2xl font-bold">Settings</h2>
+                            <div className={`px-3 py-1 rounded-full text-white text-xs font-semibold ${getConnectionStatusColor()}`}>
+                                {getConnectionStatusText()}
+                            </div>
+                        </div>
 
-                            <div className="bg-gray-50 border-2 border-gray-200 rounded-lg p-3 mb-3">
-                                <p className="text-sm font-semibold mb-2">Sync Options:</p>
-                                <div className="space-y-1 text-xs text-gray-700">
-                                    <div className="flex items-start gap-2">
-                                        <span className="font-semibold text-blue-600 min-w-[45px]">PULL</span>
-                                        <span>Download inventory FROM Google Sheets (replaces local data)</span>
-                                    </div>
-                                    <div className="flex items-start gap-2">
-                                        <span className="font-semibold text-orange-600 min-w-[45px]">PUSH</span>
-                                        <span>Upload inventory TO Google Sheets (replaces sheet data)</span>
-                                    </div>
-                                    <div className="flex items-start gap-2">
-                                        <span className="font-semibold text-green-600 min-w-[45px]">BOTH</span>
-                                        <span>Upload local data, then download (two-way sync)</span>
-                                    </div>
+                        <div className="space-y-4">
+                            {/* Setup Wizard */}
+                            <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
+                                <h3 className="font-semibold mb-3 text-blue-900">📋 Setup Checklist</h3>
+                                <div className="space-y-2 text-sm">
+                                    <label className="flex items-start gap-2 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={setupProgress.step1}
+                                            onChange={(e) => setSetupProgress({...setupProgress, step1: e.target.checked})}
+                                            className="mt-1 w-4 h-4"
+                                        />
+                                        <span className={setupProgress.step1 ? 'line-through text-gray-500' : ''}>
+                                            Created Google Sheet with columns: ID, Item Name, Box Number, Quantity, Notes
+                                        </span>
+                                    </label>
+                                    <label className="flex items-start gap-2 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={setupProgress.step2}
+                                            onChange={(e) => setSetupProgress({...setupProgress, step2: e.target.checked})}
+                                            className="mt-1 w-4 h-4"
+                                        />
+                                        <span className={setupProgress.step2 ? 'line-through text-gray-500' : ''}>
+                                            Opened Extensions → Apps Script and pasted the code
+                                        </span>
+                                    </label>
+                                    <label className="flex items-start gap-2 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={setupProgress.step3}
+                                            onChange={(e) => setSetupProgress({...setupProgress, step3: e.target.checked})}
+                                            className="mt-1 w-4 h-4"
+                                        />
+                                        <span className={setupProgress.step3 ? 'line-through text-gray-500' : ''}>
+                                            Deployed as Web App: "Execute as: Me" and "Who has access: Anyone"
+                                        </span>
+                                    </label>
+                                    <label className="flex items-start gap-2 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={setupProgress.step4}
+                                            onChange={(e) => setSetupProgress({...setupProgress, step4: e.target.checked})}
+                                            className="mt-1 w-4 h-4"
+                                        />
+                                        <span className={setupProgress.step4 ? 'line-through text-gray-500' : ''}>
+                                            Copied the Web App URL (should end with /exec)
+                                        </span>
+                                    </label>
+                                    <label className="flex items-start gap-2 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={setupProgress.step5}
+                                            onChange={(e) => setSetupProgress({...setupProgress, step5: e.target.checked})}
+                                            className="mt-1 w-4 h-4"
+                                        />
+                                        <span className={setupProgress.step5 ? 'line-through text-gray-500' : ''}>
+                                            Pasted URL below and clicked "Test Connection"
+                                        </span>
+                                    </label>
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-3 gap-2">
+                            {/* Google Sheets Integration */}
+                            <div>
+                                <h3 className="font-semibold mb-2">Google Sheets Integration</h3>
+                                <input
+                                    type="text"
+                                    value={settings.googleSheetsUrl}
+                                    onChange={(e) => setSettings({...settings, googleSheetsUrl: e.target.value})}
+                                    placeholder="Paste your Google Apps Script Web App URL here"
+                                    className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none mb-2 text-sm"
+                                />
+
+                                {/* Test Connection Button */}
                                 <button
-                                    onClick={() => syncWithSheets('pull')}
+                                    onClick={testConnection}
                                     disabled={!settings.googleSheetsUrl}
-                                    className="bg-blue-600 text-white py-3 px-3 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:bg-gray-300"
+                                    className="w-full bg-purple-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-purple-700 disabled:bg-gray-300 mb-3"
                                 >
-                                    ⬇️ Pull
+                                    🧪 Test Connection
                                 </button>
+
+                                {/* Test Results */}
+                                {testResults && (
+                                    <div className={`border-2 rounded-lg p-3 mb-3 ${testResults.overallStatus === 'success' ? 'bg-green-50 border-green-300' : testResults.overallStatus === 'failed' ? 'bg-red-50 border-red-300' : 'bg-blue-50 border-blue-300'}`}>
+                                        <h4 className="font-semibold text-sm mb-2">Connection Test Results:</h4>
+                                        <div className="space-y-1">
+                                            {testResults.steps.map((step, idx) => (
+                                                <div key={idx} className="flex items-start gap-2 text-xs">
+                                                    <span>
+                                                        {step.status === 'success' ? '✅' : step.status === 'failed' ? '❌' : '⏳'}
+                                                    </span>
+                                                    <div className="flex-1">
+                                                        <span className={step.status === 'failed' ? 'text-red-700 font-semibold' : ''}>{step.name}</span>
+                                                        {step.error && <div className="text-red-600 mt-1">{step.error}</div>}
+                                                        {step.note && <div className="text-gray-600 mt-1">{step.note}</div>}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        {testResults.errorHelp && (
+                                            <div className="mt-2 p-2 bg-white rounded text-xs whitespace-pre-line">
+                                                <strong>💡 How to fix:</strong><br/>{testResults.errorHelp}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Last Sync Info */}
+                                {lastSyncTime && (
+                                    <div className="text-xs text-gray-600 mb-2">
+                                        Last sync: {lastSyncTime} ({lastSyncStatus === 'success' ? '✅' : '❌'})
+                                    </div>
+                                )}
+
+                                <label className="flex items-center gap-2 mb-3">
+                                    <input
+                                        type="checkbox"
+                                        checked={settings.autoSync}
+                                        onChange={(e) => setSettings({...settings, autoSync: e.target.checked})}
+                                        className="w-4 h-4"
+                                    />
+                                    <span className="text-sm">Auto-sync changes to Google Sheets</span>
+                                </label>
+
+                                <div className="bg-gray-50 border-2 border-gray-200 rounded-lg p-3 mb-3">
+                                    <p className="text-sm font-semibold mb-2">Sync Options:</p>
+                                    <div className="space-y-1 text-xs text-gray-700">
+                                        <div className="flex items-start gap-2">
+                                            <span className="font-semibold text-blue-600 min-w-[45px]">PULL</span>
+                                            <span>Download FROM Google Sheets (replaces local data)</span>
+                                        </div>
+                                        <div className="flex items-start gap-2">
+                                            <span className="font-semibold text-orange-600 min-w-[45px]">PUSH</span>
+                                            <span>Upload TO Google Sheets (replaces sheet data)</span>
+                                        </div>
+                                        <div className="flex items-start gap-2">
+                                            <span className="font-semibold text-green-600 min-w-[45px]">BOTH</span>
+                                            <span>Upload local, then download (two-way sync)</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-2 mb-3">
+                                    <button
+                                        onClick={() => syncWithSheets('pull')}
+                                        disabled={!settings.googleSheetsUrl}
+                                        className="bg-blue-600 text-white py-3 px-3 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:bg-gray-300"
+                                    >
+                                        ⬇️ Pull
+                                    </button>
+                                    <button
+                                        onClick={() => syncWithSheets('push')}
+                                        disabled={!settings.googleSheetsUrl}
+                                        className="bg-orange-600 text-white py-3 px-3 rounded-lg text-sm font-semibold hover:bg-orange-700 disabled:bg-gray-300"
+                                    >
+                                        ⬆️ Push
+                                    </button>
+                                    <button
+                                        onClick={() => syncWithSheets('both')}
+                                        disabled={!settings.googleSheetsUrl}
+                                        className="bg-green-600 text-white py-3 px-3 rounded-lg text-sm font-semibold hover:bg-green-700 disabled:bg-gray-300"
+                                    >
+                                        ↕️ Both
+                                    </button>
+                                </div>
+
+                                {/* View Logs and History Buttons */}
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        onClick={() => setShowLogs(true)}
+                                        className="bg-gray-700 text-white py-2 px-3 rounded-lg text-xs font-semibold hover:bg-gray-800"
+                                    >
+                                        📋 View Logs ({syncLogs.length})
+                                    </button>
+                                    <button
+                                        onClick={() => setView('syncHistory')}
+                                        className="bg-gray-700 text-white py-2 px-3 rounded-lg text-xs font-semibold hover:bg-gray-800"
+                                    >
+                                        📊 Sync History ({syncHistory.length})
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="border-t-2 pt-4">
+                                <h3 className="font-semibold mb-2">AI Features</h3>
+                                <label className="flex items-center gap-2 mb-4">
+                                    <input
+                                        type="checkbox"
+                                        checked={settings.aiEnabled}
+                                        onChange={(e) => setSettings({...settings, aiEnabled: e.target.checked})}
+                                        className="w-5 h-5"
+                                    />
+                                    <span>Enable AI Features (Photo ID & Voice)</span>
+                                </label>
+
+                                {settings.aiEnabled && (
+                                    <>
+                                        <div className="mb-3">
+                                            <label className="block text-sm font-medium mb-1">Ollama URL</label>
+                                            <input
+                                                type="text"
+                                                value={settings.ollamaUrl}
+                                                onChange={(e) => setSettings({...settings, ollamaUrl: e.target.value})}
+                                                placeholder="http://localhost:11434"
+                                                className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium mb-1">AI Server URL</label>
+                                            <input
+                                                type="text"
+                                                value={settings.aiServerUrl}
+                                                onChange={(e) => setSettings({...settings, aiServerUrl: e.target.value})}
+                                                placeholder="http://localhost:8000"
+                                                className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
+                                            />
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+
+                            <div className="pt-4">
                                 <button
-                                    onClick={() => syncWithSheets('push')}
-                                    disabled={!settings.googleSheetsUrl}
-                                    className="bg-orange-600 text-white py-3 px-3 rounded-lg text-sm font-semibold hover:bg-orange-700 disabled:bg-gray-300"
+                                    onClick={saveSettings}
+                                    className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700"
                                 >
-                                    ⬆️ Push
+                                    💾 Save Settings
                                 </button>
+                            </div>
+
+                            <div className="border-t-2 pt-4">
+                                <h3 className="font-semibold mb-2">Data Management</h3>
+                                <p className="text-sm text-gray-600 mb-2">
+                                    {items.length} items in inventory
+                                </p>
                                 <button
-                                    onClick={() => syncWithSheets('both')}
-                                    disabled={!settings.googleSheetsUrl}
-                                    className="bg-green-600 text-white py-3 px-3 rounded-lg text-sm font-semibold hover:bg-green-700 disabled:bg-gray-300"
+                                    onClick={() => {
+                                        const data = JSON.stringify(items, null, 2);
+                                        const blob = new Blob([data], { type: 'application/json' });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement('a');
+                                        a.href = url;
+                                        a.download = 'inventory-backup.json';
+                                        a.click();
+                                        showMessage('Backup downloaded!');
+                                    }}
+                                    className="w-full bg-gray-600 text-white py-2 rounded-lg font-semibold hover:bg-gray-700"
                                 >
-                                    ⬍ Both
+                                    💾 Download Backup
                                 </button>
                             </div>
                         </div>
-
-                        <div className="border-t-2 pt-4">
-                            <h3 className="font-semibold mb-2">AI Features</h3>
-                            <label className="flex items-center gap-2 mb-4">
-                                <input
-                                    type="checkbox"
-                                    checked={settings.aiEnabled}
-                                    onChange={(e) => setSettings({...settings, aiEnabled: e.target.checked})}
-                                    className="w-5 h-5"
-                                />
-                                <span>Enable AI Features (Photo ID & Voice)</span>
-                            </label>
-
-                            {settings.aiEnabled && (
-                                <>
-                                    <div className="mb-3">
-                                        <label className="block text-sm font-medium mb-1">Ollama URL</label>
-                                        <input
-                                            type="text"
-                                            value={settings.ollamaUrl}
-                                            onChange={(e) => setSettings({...settings, ollamaUrl: e.target.value})}
-                                            placeholder="http://localhost:11434"
-                                            className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-sm font-medium mb-1">AI Server URL</label>
-                                        <input
-                                            type="text"
-                                            value={settings.aiServerUrl}
-                                            onChange={(e) => setSettings({...settings, aiServerUrl: e.target.value})}
-                                            placeholder="http://localhost:8000"
-                                            className="w-full px-4 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"
-                                        />
-                                    </div>
-                                </>
-                            )}
-                        </div>
-
-                        <div className="pt-4">
-                            <button
-                                onClick={saveSettings}
-                                className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700"
-                            >
-                                Save Settings
-                            </button>
-                        </div>
-
-                        <div className="border-t-2 pt-4">
-                            <h3 className="font-semibold mb-2">Data Management</h3>
-                            <p className="text-sm text-gray-600 mb-2">
-                                {items.length} items in inventory
-                            </p>
-                            <button
-                                onClick={() => {
-                                    const data = JSON.stringify(items, null, 2);
-                                    const blob = new Blob([data], { type: 'application/json' });
-                                    const url = URL.createObjectURL(blob);
-                                    const a = document.createElement('a');
-                                    a.href = url;
-                                    a.download = 'inventory-backup.json';
-                                    a.click();
-                                    showMessage('Backup downloaded!');
-                                }}
-                                className="w-full bg-gray-600 text-white py-2 rounded-lg font-semibold hover:bg-gray-700"
-                            >
-                                Download Backup
-                            </button>
-                        </div>
                     </div>
+                );
+            };
+
+            // Render Sync History View
+            const renderSyncHistory = () => (
+                <div className="p-4">
+                    <h2 className="text-2xl font-bold mb-4">Sync History</h2>
+
+                    {syncHistory.length === 0 ? (
+                        <div className="text-center py-12 text-gray-500">
+                            No sync history yet. Try syncing with Google Sheets!
+                        </div>
+                    ) : (
+                        <div className="space-y-2">
+                            {syncHistory.map((entry, idx) => (
+                                <div key={idx} className={`border-2 rounded-lg p-3 ${entry.status === 'success' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                                    <div className="flex justify-between items-start mb-1">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-lg">
+                                                {entry.direction === 'push' ? '⬆️' : entry.direction === 'pull' ? '⬇️' : '↕️'}
+                                            </span>
+                                            <span className="font-semibold capitalize">{entry.direction}</span>
+                                        </div>
+                                        <span className={`text-xs px-2 py-1 rounded ${entry.status === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+                                            {entry.status === 'success' ? '✓ Success' : '✗ Failed'}
+                                        </span>
+                                    </div>
+                                    <div className="text-xs text-gray-600">
+                                        {new Date(entry.timestamp).toLocaleString()}
+                                    </div>
+                                    {entry.itemCount !== undefined && (
+                                        <div className="text-sm text-gray-700 mt-1">
+                                            Items: {entry.itemCount}
+                                        </div>
+                                    )}
+                                    {entry.error && (
+                                        <div className="text-sm text-red-700 mt-1">
+                                            Error: {entry.error}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    <button
+                        onClick={() => setView('settings')}
+                        className="mt-4 w-full py-3 border-2 rounded-lg font-semibold hover:bg-gray-50"
+                    >
+                        ← Back to Settings
+                    </button>
                 </div>
             );
+
+            // Logs Modal
+            const renderLogsModal = () => {
+                if (!showLogs) return null;
+
+                return (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                        <div className="bg-white rounded-lg max-w-3xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+                            <div className="p-4 border-b-2 flex justify-between items-center">
+                                <h2 className="text-xl font-bold">Sync Logs</h2>
+                                <button
+                                    onClick={() => setShowLogs(false)}
+                                    className="p-2 hover:bg-gray-100 rounded"
+                                >
+                                    <XIcon />
+                                </button>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto p-4">
+                                {syncLogs.length === 0 ? (
+                                    <div className="text-center py-12 text-gray-500">
+                                        No logs yet. Logs will appear when you sync with Google Sheets.
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2 font-mono text-xs">
+                                        {syncLogs.map((log, idx) => {
+                                            const bgColor = log.level === 'error' ? 'bg-red-50' :
+                                                          log.level === 'warning' ? 'bg-yellow-50' :
+                                                          log.level === 'success' ? 'bg-green-50' :
+                                                          'bg-gray-50';
+                                            const icon = log.level === 'error' ? '❌' :
+                                                        log.level === 'warning' ? '⚠️' :
+                                                        log.level === 'success' ? '✅' :
+                                                        'ℹ️';
+
+                                            return (
+                                                <div key={idx} className={`p-2 rounded ${bgColor} border`}>
+                                                    <div className="flex items-start gap-2">
+                                                        <span>{icon}</span>
+                                                        <div className="flex-1">
+                                                            <div className="text-gray-500">{new Date(log.timestamp).toLocaleTimeString()}</div>
+                                                            <div className="font-semibold">{log.message}</div>
+                                                            {log.details && (
+                                                                <div className="text-gray-600 mt-1 whitespace-pre-wrap">
+                                                                    {typeof log.details === 'string' ? log.details : JSON.stringify(log.details, null, 2)}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="p-4 border-t-2">
+                                <button
+                                    onClick={() => {
+                                        const logsText = syncLogs.map(log =>
+                                            `[${log.timestamp}] [${log.level.toUpperCase()}] ${log.message}${log.details ? '\n  ' + JSON.stringify(log.details) : ''}`
+                                        ).join('\n\n');
+                                        const blob = new Blob([logsText], { type: 'text/plain' });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement('a');
+                                        a.href = url;
+                                        a.download = 'sync-logs-' + new Date().toISOString().split('T')[0] + '.txt';
+                                        a.click();
+                                        showMessage('Logs downloaded!');
+                                    }}
+                                    className="w-full bg-gray-700 text-white py-2 rounded-lg font-semibold hover:bg-gray-800"
+                                >
+                                    💾 Download Logs
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            // Sync Diff Modal
+            const renderSyncDiffModal = () => {
+                if (!showSyncDiff || !syncDiffData) return null;
+
+                const { onlyLocal, onlyRemote, modified } = syncDiffData;
+
+                return (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                        <div className="bg-white rounded-lg max-w-3xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+                            <div className="p-4 border-b-2">
+                                <h2 className="text-xl font-bold mb-2">⚠️ Sync Conflicts Detected</h2>
+                                <p className="text-sm text-gray-600">
+                                    Your local inventory and Google Sheets have differences. Review before continuing.
+                                </p>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                                {onlyLocal.length > 0 && (
+                                    <div>
+                                        <h3 className="font-semibold text-orange-700 mb-2">
+                                            📱 Only in Local ({onlyLocal.length} items)
+                                        </h3>
+                                        <div className="space-y-1">
+                                            {onlyLocal.slice(0, 5).map(item => (
+                                                <div key={item.id} className="text-sm bg-orange-50 p-2 rounded">
+                                                    {item.name} (Box {item.box})
+                                                </div>
+                                            ))}
+                                            {onlyLocal.length > 5 && (
+                                                <div className="text-xs text-gray-500">+ {onlyLocal.length - 5} more</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {onlyRemote.length > 0 && (
+                                    <div>
+                                        <h3 className="font-semibold text-blue-700 mb-2">
+                                            ☁️ Only in Google Sheets ({onlyRemote.length} items)
+                                        </h3>
+                                        <div className="space-y-1">
+                                            {onlyRemote.slice(0, 5).map(item => (
+                                                <div key={item.id} className="text-sm bg-blue-50 p-2 rounded">
+                                                    {item.name} (Box {item.box})
+                                                </div>
+                                            ))}
+                                            {onlyRemote.length > 5 && (
+                                                <div className="text-xs text-gray-500">+ {onlyRemote.length - 5} more</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {modified.length > 0 && (
+                                    <div>
+                                        <h3 className="font-semibold text-purple-700 mb-2">
+                                            🔄 Modified ({modified.length} items)
+                                        </h3>
+                                        <div className="space-y-2">
+                                            {modified.slice(0, 3).map((diff, idx) => (
+                                                <div key={idx} className="text-sm bg-purple-50 p-2 rounded">
+                                                    <div className="font-semibold">{diff.local.name}</div>
+                                                    <div className="text-xs text-gray-600">Local vs Remote differences detected</div>
+                                                </div>
+                                            ))}
+                                            {modified.length > 3 && (
+                                                <div className="text-xs text-gray-500">+ {modified.length - 3} more</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="p-4 border-t-2 space-y-2">
+                                <div className="text-xs text-gray-600 mb-2">
+                                    ⚠️ Pulling will replace your local data with Google Sheets data. Make sure this is what you want!
+                                </div>
+                                <button
+                                    onClick={async () => {
+                                        setShowSyncDiff(false);
+                                        setSyncDiffData(null);
+                                        await pullFromSheets(false); // Pull without showing diff again
+                                        showMessage('✅ Pulled from Google Sheets!');
+                                    }}
+                                    className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700"
+                                >
+                                    ⬇️ Continue with Pull (Replace Local Data)
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setShowSyncDiff(false);
+                                        setSyncDiffData(null);
+                                    }}
+                                    className="w-full border-2 py-3 rounded-lg font-semibold hover:bg-gray-50"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
 
             const renderSetupGuide = () => (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -1009,6 +1860,18 @@
                 </div>
             );
 
+            // Check browser compatibility on load
+            useEffect(() => {
+                const compatibility = checkBrowserCompatibility();
+                if (!compatibility.compatible) {
+                    showMessage(
+                        `⚠️ Browser Compatibility Issues:\n${compatibility.issues.join(', ')}\n\nPlease use a modern browser like Chrome, Firefox, or Edge.`,
+                        'error'
+                    );
+                    addLog('error', 'Browser compatibility check failed', compatibility.issues.join(', '));
+                }
+            }, []);
+
             // Start camera when view changes to aiPhoto
             useEffect(() => {
                 if (view === 'aiPhoto') {
@@ -1051,7 +1914,12 @@
                         {view === 'aiPhoto' && renderAIPhoto()}
                         {view === 'aiVoice' && renderAIVoice()}
                         {view === 'settings' && renderSettings()}
+                        {view === 'syncHistory' && renderSyncHistory()}
                     </main>
+
+                    {/* Modals */}
+                    {renderLogsModal()}
+                    {renderSyncDiffModal()}
 
                     {/* Bottom Navigation */}
                     <nav className="fixed bottom-0 left-0 right-0 bg-white border-t-2 shadow-lg">
